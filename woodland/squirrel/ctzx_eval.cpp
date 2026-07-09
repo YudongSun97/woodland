@@ -58,10 +58,19 @@ void ConvTest
   ompparfor for (Idx ci = 0; ci < nc; ++ci) {
     Real p[3];
     srf.cell_ctr_xyz(ci, p);
-    disloc->eval(p, &dislocs[3*ci]);
+    if (disloc->use_slope_xz()) {
+      Real lcs[9];
+      srf.cell_ctr_lcs(ci, lcs);
+      disloc->eval_slope_xz(p, lcs, &dislocs[3*ci]);
+    } else {
+      disloc->eval(p, &dislocs[3*ci]);
+    }
   }
   if (is_fast(eval_method)) {
-    if (t) eval_tri_fast(dislocs, sigmas);
+    // Fast path uses zxfn (rectangular grid); for z=f(x,y) use direct.
+    if (get_use_zxy())
+      eval_mesh_direct(dislocs, sigmas);
+    else if (t) eval_tri_fast(dislocs, sigmas);
     else eval_nonunirect_fast(dislocs, sigmas);
   } else if (is_hmmvp(eval_method)) {
     eval_mesh_hmmvp(dislocs, sigmas);

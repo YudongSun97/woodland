@@ -38,7 +38,8 @@ struct Stress {
     // automatic estimate.
     int triquad_order = -1;
     // 'tol' argument to acorn::get_triquad_order.
-    Real triquad_order_tol = 1e-8;
+    // Real triquad_order_tol = 1e-8;
+    Real triquad_order_tol = 1e-16;
 
     Options () {}
   };

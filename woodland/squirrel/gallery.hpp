@@ -49,12 +49,22 @@ private:
 
 void eval(const ZxFn::Shape shape, const Real x, Real& f, Real& g);
 
+// Yudong 04/08/2026
+// Function z(x,y) for (x,y) in [0,1]^2. Curved in both directions.
+struct ZxyFn {
+  enum class Shape : int { trig1_cosy = 0, cos10_cos12_y = 1 };
+  // z = f(x,y), zx = partial z / partial x, zy = partial z / partial y.
+  // zx and zy may be nullptr if gradients are not needed.
+  static void eval(const Shape shape, const Real x, const Real y,
+                   Real& z, Real* zx, Real* zy);
+};
+
 // Dislocation shapes as a function of (x,y).
 struct Disloc {
   typedef std::shared_ptr<Disloc> Ptr;
   typedef std::shared_ptr<const Disloc> CPtr;
 
-  enum class Shape { zero, tapered, pcosbell, stapered };
+  enum class Shape { zero, tapered, pcosbell, stapered, uniform, tanh_window };
 
   static Shape convert(const std::string& shape);
   static std::string convert(const Shape shape);
@@ -70,7 +80,20 @@ struct Disloc {
            const Real xhat_x, const Real xhat_y,
            const Real length_x, const Real length_y);
 
+  // Yudong 03/11/2026
+  // Slip tangent to surface, in xz plane: direction (1, 0, dz/dx)/sqrt(1+(dz/dx)^2).
+  // Uses ZxyFn for surface gradient; amplitude from Disloc::Shape set below.
+  void set_slope_xz(const ZxyFn::Shape zxy_shape,
+                    const Shape shape, const Real amplitude,
+                    const Real ctr_x, const Real ctr_y,
+                    const Real axis_x, const Real axis_y,
+                    const Real length_x, const Real length_y);
+
   void eval(const Real xy[2], Real disloc[3]) const;
+  // When set_slope_xz was used: requires LCS at (xy) to output slip in local frame.
+  void eval_slope_xz(const Real xy[2], const Real lcs[9], Real disloc[3]) const;
+
+  bool use_slope_xz() const { return use_slope_xz_; }
 
   // Check that the dislocation is 0 on bdy [0,1]^2.
   bool is_boundary_zero(const Real threshold = 0) const;
@@ -81,6 +104,8 @@ struct Disloc {
     Data () : shape(Shape::zero) {}
   };
   Data ds[3];
+  bool use_slope_xz_ = false;
+  ZxyFn::Shape zxy_shape_ = ZxyFn::Shape::trig1_cosy;
 };
 
 Real eval(const Disloc::Shape shape, const Real x);

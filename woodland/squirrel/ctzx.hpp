@@ -41,6 +41,9 @@ struct ConvTest {
 
   // Set the problem, without specifying the grid yet.
   void init(const ZxFn::Shape shape, const Disloc::CPtr& disloc);
+  // Yudong 02/23/2026
+  // z = f(x,y) mode: use ZxyFn and triangulate_zxy (no Okada reference).
+  void init_zxy(const gallery::ZxyFn::Shape shape, const Disloc::CPtr& disloc);
 
   // Set grid parameters:
   //   Set nx in ZxFn.
@@ -58,13 +61,18 @@ struct ConvTest {
   //     0, 1, 2, 3
   void set_disloc_order(const int order);
   void set_use_flat_elements(const bool use);
-  void set_general_lam_mu () { gfp.lam = 0.9; gfp.mu = 1.1; }
+  // Yudong 06/16/2026
+  // void set_general_lam_mu () { gfp.lam = 0.9; gfp.mu = 1.1; }
+  void set_general_lam_mu () { gfp.lam = 1.0; gfp.mu = 1.0; }
   //   Use Woodland impl of flat rect, constant disloc instead of Okada.
   void set_use_woodland_rg0c0(const bool use);
   //   Use a nonunirect discretization rather than triangles.
   void set_use_nonunirect(const bool use);
   //   Discretize uniformly in x rather than arc length.
   void set_xuniform(const bool use);
+  // Yudong 02/23/2026
+  //   For zxy mode: set (nx, ny) for triangulate_zxy grid.
+  void set_nx_ny_zxy(const int nx, const int ny);
 
   // 0 for none.
   void set_verbosity (const int level) { verbosity = level; }
@@ -77,8 +85,11 @@ struct ConvTest {
   bool get_use_halfspace () const { return gfp.halfspace; }
   const GreensFnParams& get_gfp () const { return gfp; }
   // nx, ny are the number of rectangles in each dimension.
-  int get_nx () const { return zxfn->get_nx(); }
-  int get_ny () const { return zxfn->get_ny(); }
+  int get_nx () const;
+  int get_ny () const;
+  // Yudong 02/23/2026
+  bool get_use_zxy () const { return use_zxy; }
+  gallery::ZxyFn::Shape get_zxy_shape () const { return zxy_shape; }
 
   void print(FILE* fp = stdout) const;
 
@@ -163,6 +174,12 @@ private:
   bool use_nonunirect = false;
   bool xuniform = false;
   DiscretizeArgs dargs;
+  // Yudong 02/23/2026
+  bool use_zxy = false;
+  gallery::ZxyFn::Shape zxy_shape = gallery::ZxyFn::Shape::trig1_cosy;
+  // Yudong 02/23/2026
+  // default grid size for triangulate_zxy.
+  int nx_zxy = 50, ny_zxy = 50;
   ZxFn::Ptr zxfn;
   Disloc::CPtr disloc;
   Triangulation::Ptr t;
@@ -190,6 +207,12 @@ public: // for unit tests
   static Triangulation::Ptr
   triangulate(const ZxFn& zxfn, const int ntri_per_rect = 2);
 
+  // Yudong 02/20/2026
+  static Triangulation::Ptr
+  triangulate_zxy(const int nx, const int ny,
+                  const gallery::ZxyFn::Shape zxy_shape,
+                  const int ntri_per_rect = 2);
+
   static mesh::Mesh::CPtr make_nonunirect_mesh(const ZxFn& zxfn);
 
   void set_support_req0(const bool use);
@@ -199,6 +222,13 @@ public: // for unit tests
   discretize(const mesh::Mesh::CPtr& m,
              const Triangulation::Ptr& t,
              const ZxFn::Shape shape,
+             const DiscretizeArgs args = DiscretizeArgs());
+
+  // Yudong 02/23/2026
+  static Discretization::Ptr
+  discretize(const mesh::Mesh::CPtr& m,
+             const Triangulation::Ptr& t,
+             const gallery::ZxyFn::Shape zxy_shape,
              const DiscretizeArgs args = DiscretizeArgs());
 
 public: // for external implementations
@@ -214,6 +244,13 @@ public: // for external implementations
 void run_case(const std::string& params);
 void convtest_w_vs_e(const std::string& params);
 void convtest_o_vs_e(const std::string& params);
+// Stress on z=f(x,y): init_zxy, discretize, eval (no exact reference). Params: nx=, ny=, srfrecon=0, testcase=, ntri=.
+void run_stress_zxy(const std::string& params);
+// Yudong 03/04/2026
+// Stress on z=f(x,y): init_zxy, discretize, eval_exact_at_cell_ctrs (Exact reference) and optionally compare to eval.
+void run_stress_zxy_exact(const std::string& params);
+// Build 6 ncell x ncell influence matrices on z=f(x,y); write Python. Params: nx=, ny=, testcase=, ntri=, verify=, out=, disloccomp=.
+void run_matrix_zxy(const std::string& params);
 
 // o_nbr is set to o before filling it. Thus, set fields in o that will be
 // common to both.
