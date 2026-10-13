@@ -5,6 +5,8 @@
 #include "woodland/squirrel/ctzx.hpp"
 #include "woodland/squirrel/solver1d.hpp"
 #include "woodland/squirrel/bezier_cubic.hpp"
+#include "woodland/squirrel/bicubic_bezier.hpp"
+#include "woodland/squirrel/bicubic_bezier_surface.hpp"
 
 #include <sys/stat.h>
 
@@ -17,6 +19,9 @@ int unittest () {
   mkdir("tmp", 0777);
   rununittest(Solver1d<Real>::unittest);
   rununittest(BezierCubic<Real>::unittest);
+  rununittest(BicubicBezier::unittest);
+  rununittest(BicubicBezierSurface::unittest);
+  rununittest(gallery::ZxyFn::unittest);
   rununittest(mesh::unittest);
   rununittest(Exact::unittest);
   rununittest(Discretization::unittest);

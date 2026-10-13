@@ -26,8 +26,9 @@ void init_xhat_from_primary (const Real zhat[3], const Real primary[3],
 }
 
 MeshBasedSurface
-::MeshBasedSurface (const mesh::Mesh::CPtr& m, const bool scale)
-{ init(m, scale); }
+::MeshBasedSurface (const mesh::Mesh::CPtr& m, const bool scale,
+                    const int uv_dim0, const int uv_dim1)
+{ init(m, scale, uv_dim0, uv_dim1); }
 
 static void svd (CRPtr ps, const int n, Real sig[2], Real Ut[4]) {
   Real coef[4];
@@ -54,9 +55,14 @@ static void init_scale (const Real ctr[2], const acorn::plane::Polygon& p,
   lambda[0] = 1;
 }
 
-void MeshBasedSurface::init (const mesh::Mesh::CPtr& m_, const bool scale_) {
+void MeshBasedSurface::init (const mesh::Mesh::CPtr& m_, const bool scale_,
+                             const int uv_dim0, const int uv_dim1) {
   m = m_;
   this->scale_ = scale_;
+  assert(uv_dim0 >= 0 && uv_dim0 < 3 && uv_dim1 >= 0 && uv_dim1 < 3);
+  assert(uv_dim0 != uv_dim1);
+  uv_dims_[0] = uv_dim0;
+  uv_dims_[1] = uv_dim1;
   const auto& v = *m->get_vtxs();
   const auto& to = *m->get_topo();
   const auto nc = to.get_ncell();
@@ -70,8 +76,11 @@ void MeshBasedSurface::init (const mesh::Mesh::CPtr& m_, const bool scale_) {
     const auto c = to.get_cell(ci);
     Real vtxs[2*max_nvtx];
     assert(c.n <= max_nvtx);
-    for (int i = 0; i < c.n; ++i)
-      mv2::copy(v.get_vtx(c[i]), &vtxs[2*i]);
+    for (int i = 0; i < c.n; ++i) {
+      const auto p = v.get_vtx(c[i]);
+      vtxs[2*i  ] = p[uv_dims_[0]];
+      vtxs[2*i+1] = p[uv_dims_[1]];
+    }
     acorn::plane::Polygon p(vtxs, c.n);
     acorn::plane::calc_centroid(p, &uv_ctrs[2*ci]);
     assert(not std::isnan(uv_ctrs[2*ci]));
@@ -154,7 +163,7 @@ void MeshBasedSurface::cell_vtxs_uv (const Idx ci, RPtr uv) const {
   for (int i = 0; i < c.n; ++i) {
     const auto p = v.get_vtx(c[i]);
     for (int d = 0; d < 2; ++d)
-      uv[2*i + d] = p[d];
+      uv[2*i + d] = p[uv_dims_[d]];
   }
   if (scale(ci))
     for (int i = 0; i < c.n; ++i)

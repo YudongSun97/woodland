@@ -42,8 +42,15 @@ struct ConvTest {
   // Set the problem, without specifying the grid yet.
   void init(const ZxFn::Shape shape, const Disloc::CPtr& disloc);
   // Yudong 02/23/2026
-  // z = f(x,y) mode: use ZxyFn and triangulate_zxy (no Okada reference).
-  void init_zxy(const gallery::ZxyFn::Shape shape, const Disloc::CPtr& disloc);
+  // z = f(x,y) mode on x in [0,lx], y in [0,ly]. ZxyFn is evaluated on
+  // normalized coordinates (x/lx,y/ly), so lx=ly=1 preserves legacy behavior.
+  void init_zxy(const gallery::ZxyFn::Shape shape, const Disloc::CPtr& disloc,
+                const Real lx = 1, const Real ly = 1);
+  // y = f(x,z), x in [0,lx], z in [-lz,0]. ZxyFn is evaluated on the
+  // normalized coordinates (-z/lz,x/lx), so the default shape is extruded
+  // along global x and xhat remains (1,0,0).
+  void init_yxz(const gallery::ZxyFn::Shape shape, const Disloc::CPtr& disloc,
+                const Real lx, const Real lz);
 
   // Set grid parameters:
   //   Set nx in ZxFn.
@@ -52,6 +59,9 @@ struct ConvTest {
   void set_ny(const int ny);
   //   For looking at the effects of various things.
   void set_use_four_tris_per_rect(const bool use);
+  //   Use one quadrilateral cell per logical rectangle. Currently supported
+  //   for analytic z=f(x,y) and y=f(x,z) surfaces only.
+  void set_use_quad_cells(const bool use);
   void set_use_surface_recon(const bool use);
   void set_use_exact_tangents(const bool use);
   void set_use_c2_spline(const bool use);
@@ -89,7 +99,10 @@ struct ConvTest {
   int get_ny () const;
   // Yudong 02/23/2026
   bool get_use_zxy () const { return use_zxy; }
+  bool get_use_yxz () const { return use_yxz; }
   gallery::ZxyFn::Shape get_zxy_shape () const { return zxy_shape; }
+  Real get_zxy_lx () const { return zxy_lx; }
+  Real get_zxy_ly () const { return zxy_ly; }
 
   void print(FILE* fp = stdout) const;
 
@@ -163,12 +176,16 @@ public: // for unit tests
     bool use_c2_spline = false;
     bool mesh_scale = true;
     bool support_req0 = true;
+    // Physical z=f(x,y) domain dimensions. ZxyFn retains a [0,1]^2
+    // reference domain, and its physical derivatives are scaled accordingly.
+    Real zxy_lx = 1, zxy_ly = 1;
     DiscretizeArgs () {}
   };
 
 private:
   GreensFnParams gfp;
   int ntri_per_rect = 2;
+  bool use_quad_cells = false;
   int disloc_order = 2;
   bool use_woodland_rg0c0 = false;
   bool use_nonunirect = false;
@@ -176,7 +193,10 @@ private:
   DiscretizeArgs dargs;
   // Yudong 02/23/2026
   bool use_zxy = false;
+  bool use_yxz = false;
   gallery::ZxyFn::Shape zxy_shape = gallery::ZxyFn::Shape::trig1_cosy;
+  Real zxy_lx = 1, zxy_ly = 1;
+  Real yxz_lx = 1, yxz_lz = 1;
   // Yudong 02/23/2026
   // default grid size for triangulate_zxy.
   int nx_zxy = 50, ny_zxy = 50;
@@ -211,7 +231,22 @@ public: // for unit tests
   static Triangulation::Ptr
   triangulate_zxy(const int nx, const int ny,
                   const gallery::ZxyFn::Shape zxy_shape,
+                  const int ntri_per_rect = 2,
+                  const Real lx = 1, const Real ly = 1);
+
+  static Triangulation::Ptr
+  triangulate_yxz(const int nx, const int nz, const Real lx, const Real lz,
+                  const gallery::ZxyFn::Shape shape,
                   const int ntri_per_rect = 2);
+
+  static mesh::Mesh::CPtr
+  make_quad_mesh_zxy(const int nx, const int ny,
+                     const gallery::ZxyFn::Shape shape,
+                     const Real lx = 1, const Real ly = 1);
+
+  static mesh::Mesh::CPtr
+  make_quad_mesh_yxz(const int nx, const int nz, const Real lx, const Real lz,
+                     const gallery::ZxyFn::Shape shape);
 
   static mesh::Mesh::CPtr make_nonunirect_mesh(const ZxFn& zxfn);
 
@@ -231,6 +266,12 @@ public: // for unit tests
              const gallery::ZxyFn::Shape zxy_shape,
              const DiscretizeArgs args = DiscretizeArgs());
 
+  static Discretization::Ptr
+  discretize_yxz(const mesh::Mesh::CPtr& m,
+                 const gallery::ZxyFn::Shape shape,
+                 const Real lx, const Real lz,
+                 const DiscretizeArgs args = DiscretizeArgs());
+
 public: // for external implementations
   static void calc_rect_ctr(const ZxFn& zxfn, const int nyr, const int irect,
                             Real p[3], RPtr nml = nullptr, RPtr lengths = nullptr);
@@ -249,7 +290,11 @@ void run_stress_zxy(const std::string& params);
 // Yudong 03/04/2026
 // Stress on z=f(x,y): init_zxy, discretize, eval_exact_at_cell_ctrs (Exact reference) and optionally compare to eval.
 void run_stress_zxy_exact(const std::string& params);
-// Build 6 ncell x ncell influence matrices on z=f(x,y); write Python. Params: nx=, ny=, testcase=, ntri=, verify=, out=, disloccomp=.
+// Build influence matrices. surface=yxz produces A_xy/A_yy on y=f(x,z),
+// x in [0,lx], z in [-lz,0]; surface=zxy produces A_xz/A_zz on z=f(x,y),
+// x in [0,lx], y in [0,ly]. Params: surface=, nx=, ny= or nz=, lx=, ly=, lz=,
+// testcase=, element=tri|quad, ntri=1|2|4, halfspace=, verify=, out=,
+// disloccomp=. ntri=1 is an alias for element=quad.
 void run_matrix_zxy(const std::string& params);
 
 // o_nbr is set to o before filling it. Thus, set fields in o that will be

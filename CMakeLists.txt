@@ -8,6 +8,13 @@ project(
 include(CTest)
 
 find_package(OpenMP)
+if (APPLE AND OpenMP_CXX_FOUND AND OpenMP_libomp_LIBRARY)
+  # FindOpenMP links clang's runtime as @rpath/libomp.dylib. Preserve its
+  # directory in installed executables so they run directly from bin/.
+  get_filename_component(WOODLAND_OPENMP_CXX_LIBDIR
+    "${OpenMP_libomp_LIBRARY}" DIRECTORY)
+  list(APPEND CMAKE_INSTALL_RPATH "${WOODLAND_OPENMP_CXX_LIBDIR}")
+endif()
 if (OpenMP_CXX_FOUND)
   link_libraries(OpenMP::OpenMP_CXX)
 endif()

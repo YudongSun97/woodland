@@ -58,12 +58,23 @@ void ConvTest
   ompparfor for (Idx ci = 0; ci < nc; ++ci) {
     Real p[3];
     srf.cell_ctr_xyz(ci, p);
+    Real param[3] = {p[0], p[1], 0};
+    if (get_use_yxz()) {
+      // Disloc is defined on the normalized [0,1]^2 reference domain.
+      param[0] = p[0]/yxz_lx;
+      param[1] = -p[2]/yxz_lz;
+    } else if (get_use_zxy()) {
+      // z=f(x,y) also uses a normalized [0,1]^2 dislocation domain.
+      param[0] = p[0]/zxy_lx;
+      param[1] = p[1]/zxy_ly;
+    }
     if (disloc->use_slope_xz()) {
+      throw_if(get_use_yxz(), "eval: slope_xz dislocation is not supported on y=f(x,z)");
       Real lcs[9];
       srf.cell_ctr_lcs(ci, lcs);
-      disloc->eval_slope_xz(p, lcs, &dislocs[3*ci]);
+      disloc->eval_slope_xz(param, lcs, &dislocs[3*ci], zxy_lx);
     } else {
-      disloc->eval(p, &dislocs[3*ci]);
+      disloc->eval(param, &dislocs[3*ci]);
     }
   }
   if (is_fast(eval_method)) {

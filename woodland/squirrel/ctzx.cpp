@@ -6,12 +6,16 @@
 #include "woodland/acorn/dbg.hpp"
 
 #include "woodland/squirrel/mesh.hpp"
+#include "woodland/squirrel/global_y_surface.hpp"
 #include "woodland/squirrel/global_z_surface.hpp"
+#include "woodland/squirrel/bicubic_bezier_surface.hpp"
 #include "woodland/squirrel/ctzx.hpp"
 #include "woodland/squirrel/pywrite.hpp"
 #include "woodland/squirrel/mesh.hpp"
 
 #include <cmath>
+#include <fstream>
+#include <iterator>
 #include <set>
 #include <map>
 #include <stdexcept>
@@ -72,6 +76,7 @@ void pywrite (FILE* fp, const std::string& dict, const mesh::Mesh& m) {
 
 void ConvTest::init (const ZxFn::Shape shape, const Disloc::CPtr& disloc_) {
   use_zxy = false;
+  use_yxz = false;
   zxfn = std::make_shared<ZxFn>(shape);
   disloc = disloc_;
   gfp.lam = gfp.mu = 1;
@@ -81,9 +86,17 @@ void ConvTest::init (const ZxFn::Shape shape, const Disloc::CPtr& disloc_) {
 #endif
 }
 // Yudong 02/23/2026
-void ConvTest::init_zxy (const gallery::ZxyFn::Shape shape, const Disloc::CPtr& disloc_) {
+void ConvTest::init_zxy (const gallery::ZxyFn::Shape shape,
+                         const Disloc::CPtr& disloc_,
+                         const Real lx, const Real ly) {
+  throw_if(lx <= 0 || ly <= 0, "init_zxy: lx and ly must be positive");
   use_zxy = true;
+  use_yxz = false;
   zxy_shape = shape;
+  zxy_lx = lx;
+  zxy_ly = ly;
+  dargs.zxy_lx = lx;
+  dargs.zxy_ly = ly;
   zxfn.reset();
   disloc = disloc_;
   nx_zxy = 2;
@@ -93,6 +106,16 @@ void ConvTest::init_zxy (const gallery::ZxyFn::Shape shape, const Disloc::CPtr& 
 #ifndef WOODLAND_ACORN_HAVE_DC3D
   use_woodland_rg0c0 = true;
 #endif
+}
+
+void ConvTest::init_yxz (const gallery::ZxyFn::Shape shape,
+                         const Disloc::CPtr& disloc_,
+                         const Real lx, const Real lz) {
+  throw_if(lx <= 0 || lz <= 0, "init_yxz: lx and lz must be positive");
+  init_zxy(shape, disloc_);
+  use_yxz = true;
+  yxz_lx = lx;
+  yxz_lz = lz;
 }
 
 // Yudong 02/23/2026
@@ -139,6 +162,11 @@ void ConvTest::set_nx_ny_zxy (const int nx, const int ny) {
 void ConvTest::set_use_four_tris_per_rect(const bool use) {
   if ((use ? 4 : 2) != ntri_per_rect) { t = nullptr; d = nullptr; }
   ntri_per_rect = use ? 4 : 2;
+}
+
+void ConvTest::set_use_quad_cells (const bool use) {
+  if (use != use_quad_cells) { t = nullptr; d = nullptr; }
+  use_quad_cells = use;
 }
 
 void ConvTest::set_use_surface_recon (const bool use) {
@@ -226,8 +254,12 @@ void ConvTest::print (FILE* fp) const {
           int(not dargs.use_surface_recon), int(dargs.use_flat_elements),
           int(dargs.use_exact_tangents), dargs.tan_recon_order,
           int(dargs.use_c2_spline));
-  if (use_zxy)
-    fprintf(fp, "ct> zxy_shape %s nx %d ny %d\n", zxy_shape_name(zxy_shape), nx_zxy, ny_zxy);
+  if (use_yxz)
+    fprintf(fp, "ct> yxz_shape %s nx %d nz %d lx %g lz %g\n",
+            zxy_shape_name(zxy_shape), nx_zxy, ny_zxy, yxz_lx, yxz_lz);
+  else if (use_zxy)
+    fprintf(fp, "ct> zxy_shape %s nx %d ny %d lx %g ly %g\n",
+            zxy_shape_name(zxy_shape), nx_zxy, ny_zxy, zxy_lx, zxy_ly);
   else
     fprintf(fp, "ct> zshape %s\n", ZxFn::convert(zxfn->get_shape()).c_str());
   if (use_woodland_rg0c0) printf("ct> using woodland impl of rg0c0\n");
@@ -335,8 +367,9 @@ Triangulation::Ptr ConvTest
 Triangulation::Ptr ConvTest
 ::triangulate_zxy (const int nx, const int ny,
                    const gallery::ZxyFn::Shape zxy_shape,
-                   const int ntri_per_rect) {
-  assert(nx >= 1 && ny >= 1);
+                   const int ntri_per_rect,
+                   const Real lx, const Real ly) {
+  assert(nx >= 1 && ny >= 1 && lx > 0 && ly > 0);
 
   const auto t = std::make_shared<Triangulation>();
   t->begin_modifications();
@@ -380,11 +413,13 @@ Triangulation::Ptr ConvTest
   t->end_modifications();
 
   for (int xi = 0; xi <= nx; ++xi) {
-    const Real x = Real(xi) / nx;
+    const Real u = Real(xi) / nx;
+    const Real x = lx*u;
     for (int yi = 0; yi <= ny; ++yi) {
-      const Real y = Real(yi) / ny;
+      const Real v = Real(yi) / ny;
+      const Real y = ly*v;
       Real z;
-      gallery::ZxyFn::eval(zxy_shape, x, y, z, nullptr, nullptr);
+      gallery::ZxyFn::eval(zxy_shape, u, v, z, nullptr, nullptr);
       Real* vtx = t->get_vtx(pnx*yi + xi);
       vtx[0] = x;
       vtx[1] = y;
@@ -393,11 +428,13 @@ Triangulation::Ptr ConvTest
   }
   if (ntri_per_rect == 4) {
     for (int xi = 0; xi < nx; ++xi) {
-      const Real x = (xi + 0.5) / nx;
+      const Real u = (xi + 0.5) / nx;
+      const Real x = lx*u;
       for (int yi = 0; yi < ny; ++yi) {
-        const Real y = (yi + 0.5) / ny;
+        const Real v = (yi + 0.5) / ny;
+        const Real y = ly*v;
         Real z;
-        gallery::ZxyFn::eval(zxy_shape, x, y, z, nullptr, nullptr);
+        gallery::ZxyFn::eval(zxy_shape, u, v, z, nullptr, nullptr);
         Real* vtx = t->get_vtx(os + nx*yi + xi);
         vtx[0] = x;
         vtx[1] = y;
@@ -407,6 +444,87 @@ Triangulation::Ptr ConvTest
   }
 
   return t;
+}
+
+Triangulation::Ptr ConvTest
+::triangulate_yxz (const int nx, const int nz, const Real lx, const Real lz,
+                   const gallery::ZxyFn::Shape shape,
+                   const int ntri_per_rect) {
+  throw_if(lx <= 0 || lz <= 0, "triangulate_yxz: lx and lz must be positive");
+  auto t = triangulate_zxy(nx, nz, shape, ntri_per_rect);
+  for (Idx vi = 0; vi < t->get_nvtx(); ++vi) {
+    auto p = t->get_vtx(vi);
+    const Real u = p[0], v = p[1];
+    Real y;
+    // ZxyFn's first coordinate is depth and its second is along strike. The
+    // default trig1_cosy shape is independent of the second coordinate, so
+    // xhat remains exactly global +x.
+    gallery::ZxyFn::eval(shape, v, u, y, nullptr, nullptr);
+    p[0] = lx*u;
+    p[1] = y;
+    p[2] = -lz*v;
+  }
+  return t;
+}
+
+namespace {
+
+mesh::Mesh::CPtr make_quad_mesh_zxy_or_yxz (
+  const int nx, const int nsecond, const Real lx, const Real lsecond,
+  const gallery::ZxyFn::Shape shape, const bool use_yxz)
+{
+  throw_if(nx < 1 || nsecond < 1,
+           "make_quad_mesh: grid dimensions must be positive");
+  throw_if(lx <= 0 || lsecond <= 0,
+           "make_quad_mesh: physical dimensions must be positive");
+
+  const auto vtxs = mesh::make_vertices(3);
+  const auto topo = mesh::make_topology();
+
+  for (int j = 0; j <= nsecond; ++j) {
+    const Real v = Real(j)/nsecond;
+    for (int i = 0; i <= nx; ++i) {
+      const Real u = Real(i)/nx;
+      Real f;
+      gallery::ZxyFn::eval(shape, use_yxz ? v : u, use_yxz ? u : v,
+                           f, nullptr, nullptr);
+      const Real p_zxy[3] = {lx*u, lsecond*v, f};
+      const Real p_yxz[3] = {lx*u, f, -lsecond*v};
+      vtxs->append_vtx(use_yxz ? p_yxz : p_zxy);
+    }
+  }
+
+  const auto vi = [nx] (const int i, const int j) -> Idx {
+    return j*(nx + 1) + i;
+  };
+  for (int j = 0; j < nsecond; ++j)
+    for (int i = 0; i < nx; ++i) {
+      const Idx cell[4] = {
+        vi(i, j), vi(i+1, j), vi(i+1, j+1), vi(i, j+1)
+      };
+      topo->append_cell(4, cell);
+    }
+  topo->end_modifications();
+
+  const auto relations = mesh::make_relations(topo);
+  return mesh::make_mesh(vtxs, topo, relations);
+}
+
+} // namespace
+
+mesh::Mesh::CPtr ConvTest
+::make_quad_mesh_zxy (const int nx, const int ny,
+                      const gallery::ZxyFn::Shape shape,
+                      const Real lx, const Real ly) {
+  throw_if(lx <= 0 || ly <= 0,
+           "make_quad_mesh_zxy: lx and ly must be positive");
+  return make_quad_mesh_zxy_or_yxz(nx, ny, lx, ly, shape, false);
+}
+
+mesh::Mesh::CPtr ConvTest
+::make_quad_mesh_yxz (const int nx, const int nz, const Real lx, const Real lz,
+                      const gallery::ZxyFn::Shape shape) {
+  return make_quad_mesh_zxy_or_yxz(nx, nz, lx, lz, shape, true);
 }
 
 namespace {
@@ -429,13 +547,40 @@ struct Param2DUserFn : public GlobalZSurface::UserFn {
 // UserFn for z = f(x,y): full gradient g = (zx, zy).
 // it is a small adapter that tells GlobalZSurface how to evaluate z = f(x,y) and its gradient.
 struct Param2DUserFnZxy : public GlobalZSurface::UserFn {
-  Param2DUserFnZxy (const gallery::ZxyFn::Shape shape_) : shape(shape_) {}
+  Param2DUserFnZxy (const gallery::ZxyFn::Shape shape_,
+                    const Real lx_, const Real ly_)
+    : shape(shape_), lx(lx_), ly(ly_) {}
 
   void eval (const Real x, const Real y, Real& f, RPtr g) const override {
-    gallery::ZxyFn::eval(shape, x, y, f, g ? &g[0] : nullptr, g ? &g[1] : nullptr);
+    gallery::ZxyFn::eval(shape, x/lx, y/ly, f,
+                         g ? &g[0] : nullptr, g ? &g[1] : nullptr);
+    if (g) {
+      g[0] /= lx;
+      g[1] /= ly;
+    }
   }
 
   gallery::ZxyFn::Shape shape;
+  Real lx, ly;
+};
+
+struct Param2DUserFnYxz : public GlobalYSurface::UserFn {
+  Param2DUserFnYxz (const gallery::ZxyFn::Shape shape_,
+                    const Real lx_, const Real lz_)
+    : shape(shape_), lx(lx_), lz(lz_) {}
+
+  void eval (const Real x, const Real z, Real& f, RPtr g) const override {
+    Real fdepth, falong;
+    gallery::ZxyFn::eval(shape, -z/lz, x/lx, f,
+                         g ? &fdepth : nullptr, g ? &falong : nullptr);
+    if (g) {
+      g[0] = falong/lx;
+      g[1] = -fdepth/lz;
+    }
+  }
+
+  gallery::ZxyFn::Shape shape;
+  Real lx, lz;
 };
 } // namespace
 
@@ -475,15 +620,32 @@ Discretization::Ptr ConvTest
   if (a.use_flat_elements) {
     const Real primary[] = {1, 0, 0};
     srf = std::make_shared<FlatElementSurface>(t, primary);
+  } else if (a.use_surface_recon) {
+    throw_if(!m, "ctzx::discretize(zxy): srfrecon requires a mesh");
+    const auto& topo = *m->get_topo();
+    for (Idx ci = 0; ci < m->get_ncell(); ++ci)
+      throw_if(topo.get_cell(ci).n != 4,
+               "ctzx::discretize(zxy): bicubic srfrecon requires quad cells");
+    srf = std::make_shared<BicubicBezierSurface>(
+      m, zxy_shape, a.zxy_lx, a.zxy_ly);
   } else {
-    if (a.use_surface_recon) {
-      throw std::runtime_error(
-        "ctzx::discretize(zxy): srfrecon=1 (2D surface recon) not implemented");
-    }
-    const auto ufn = std::make_shared<Param2DUserFnZxy>(zxy_shape);
+    const auto ufn = std::make_shared<Param2DUserFnZxy>(
+      zxy_shape, a.zxy_lx, a.zxy_ly);
     srf = std::make_shared<GlobalZSurface>(
       m, ufn, a.support_req0, a.mesh_scale);
   }
+  return make_discretization(m, srf);
+}
+
+Discretization::Ptr ConvTest
+::discretize_yxz (const mesh::Mesh::CPtr& m,
+                  const gallery::ZxyFn::Shape shape,
+                  const Real lx, const Real lz, const DiscretizeArgs a) {
+  throw_if(a.use_surface_recon || a.use_flat_elements,
+           "discretize_yxz: reconstruction and flat elements are not supported");
+  const auto ufn = std::make_shared<Param2DUserFnYxz>(shape, lx, lz);
+  const auto srf = std::make_shared<GlobalYSurface>(
+    m, ufn, a.support_req0, a.mesh_scale);
   return make_discretization(m, srf);
 }
 
@@ -703,10 +865,28 @@ void ConvTest::discretize () {
   // Yudong 02/23/2026
   if (use_zxy) {
     throw_if(use_nonunirect, "zxy mode does not support nonunirect=1");
-    t = triangulate_zxy(nx_zxy, ny_zxy, zxy_shape, ntri_per_rect);
-    const auto tr = std::make_shared<TriangulationRelations>(t);
-    m = tri2mesh(*t, tr);
-    d = discretize(m, t, zxy_shape, dargs);
+    if (use_quad_cells) {
+      throw_if(dargs.use_flat_elements,
+               "quadrilateral cells require flatelem=0");
+      throw_if(use_yxz && dargs.use_surface_recon,
+               "surface=yxz does not support srfrecon=1");
+      t = nullptr;
+      m = use_yxz ?
+        make_quad_mesh_yxz(nx_zxy, ny_zxy, yxz_lx, yxz_lz, zxy_shape) :
+        make_quad_mesh_zxy(nx_zxy, ny_zxy, zxy_shape, zxy_lx, zxy_ly);
+    } else {
+      throw_if(dargs.use_surface_recon,
+               "zxy bicubic srfrecon requires element=quad (or ntri=1)");
+      t = use_yxz ?
+        triangulate_yxz(nx_zxy, ny_zxy, yxz_lx, yxz_lz,
+                        zxy_shape, ntri_per_rect) :
+        triangulate_zxy(nx_zxy, ny_zxy, zxy_shape, ntri_per_rect,
+                        zxy_lx, zxy_ly);
+      const auto tr = std::make_shared<TriangulationRelations>(t);
+      m = tri2mesh(*t, tr);
+    }
+    d = use_yxz ? discretize_yxz(m, zxy_shape, yxz_lx, yxz_lz, dargs) :
+                  discretize(m, t, zxy_shape, dargs);
   } else {
     if (not use_nonunirect) {
       t = triangulate(*zxfn, ntri_per_rect);
@@ -1237,39 +1417,112 @@ static int check_errors (const RealArray& sd, const RealArray& sf,
 namespace {
 
 struct MatrixZxyOpts {
+  std::string surface = "yxz";
+  std::string element = "tri";
   int nx = 4;
   int ny = 4;
+  int nz = 4;
+  Real lx = 1;
+  Real ly = 1;
+  Real lz = 1;
   int testcase = 20;
   int ntri = 2;
   int dislocorder = 2;
   int disloc_comp = 0;
   bool flatelem = false;
+  bool srfrecon = false;
+  bool halfspace = false;
   bool verify = false;
-  std::string outfile = "zxy_A.py";
+  bool simple_output = false;
+  std::string outfile;
 };
 
 static const int matrix_zxy_ncomp = 2;
-static const int matrix_zxy_comps[matrix_zxy_ncomp] = {2, 5};
-static const char* matrix_zxy_comp_names[matrix_zxy_ncomp] = {"xz", "zz"};
+
+static bool matrix_is_yxz (const MatrixZxyOpts& opts) {
+  return opts.surface == "yxz";
+}
+
+static bool matrix_use_quads (const MatrixZxyOpts& opts) {
+  return opts.element == "quad" || opts.ntri == 1;
+}
+
+static int matrix_zxy_comp (const MatrixZxyOpts& opts, const int i) {
+  static const int yxz_comps[matrix_zxy_ncomp] = {1, 3};
+  static const int zxy_comps[matrix_zxy_ncomp] = {2, 5};
+  return (matrix_is_yxz(opts) ? yxz_comps : zxy_comps)[i];
+}
+
+static const char* matrix_zxy_comp_name (const MatrixZxyOpts& opts,
+                                         const int i) {
+  static const char* yxz_names[matrix_zxy_ncomp] = {"xy", "yy"};
+  static const char* zxy_names[matrix_zxy_ncomp] = {"xz", "zz"};
+  return (matrix_is_yxz(opts) ? yxz_names : zxy_names)[i];
+}
 
 static void write_matrix_zxy_py (FILE* fp, const MatrixZxyOpts& opts,
                                  const mesh::Mesh& mesh,
+                                 const Surface& surface,
                                  const int nc, const RealArray& A,
                                  const RealArray& dislocs,
                                  const RealArray& sigmas_direct) {
   pywrite_header(fp);
   fprintf(fp, "d = {}\n");
+  if (opts.simple_output) {
+    fprintf(fp, "d['m'] = {}\n");
+    pywrite(fp, "d['m']", mesh);
+    pywrite_double_array(fp, "d['A_xz']", nc, nc, &A[0]);
+    pywrite_double_array(fp, "d['A_zz']", nc, nc, &A[nc*nc]);
+    return;
+  }
   fprintf(fp, "d['type'] = 'mesh'\n");
   fprintf(fp, "d['nx'] = %d\n", opts.nx);
-  fprintf(fp, "d['ny'] = %d\n", opts.ny);
+  if (matrix_is_yxz(opts)) {
+    fprintf(fp, "d['nz'] = %d\n", opts.nz);
+    fprintf(fp, "d['lx'] = %24.16e\n", opts.lx);
+    fprintf(fp, "d['lz'] = %24.16e\n", opts.lz);
+    fprintf(fp, "d['x_range'] = (0.0, d['lx'])\n");
+    fprintf(fp, "d['z_range'] = (-d['lz'], 0.0)\n");
+    fprintf(fp, "d['surface'] = 'yxz'\n");
+    fprintf(fp, "d['surface_equation'] = 'y=f(x,z)'\n");
+  } else {
+    fprintf(fp, "d['ny'] = %d\n", opts.ny);
+    fprintf(fp, "d['lx'] = %24.16e\n", opts.lx);
+    fprintf(fp, "d['ly'] = %24.16e\n", opts.ly);
+    fprintf(fp, "d['x_range'] = (0.0, d['lx'])\n");
+    fprintf(fp, "d['y_range'] = (0.0, d['ly'])\n");
+    fprintf(fp, "d['surface'] = 'zxy'\n");
+    fprintf(fp, "d['surface_equation'] = 'z=f(x,y)'\n");
+  }
+  fprintf(fp, "d['halfspace'] = %s\n", opts.halfspace ? "True" : "False");
+  fprintf(fp, "d['srfrecon'] = %s\n", opts.srfrecon ? "True" : "False");
+  fprintf(fp, "d['surface_representation'] = '%s'\n",
+          opts.srfrecon ? "bicubic_bezier" : "analytic");
+  fprintf(fp, "d['element'] = '%s'\n",
+          matrix_use_quads(opts) ? "quad" : "tri");
+  fprintf(fp, "d['cells_per_rectangle'] = %d\n",
+          matrix_use_quads(opts) ? 1 : opts.ntri);
+  fprintf(fp, "d['coordinate_frame'] = 'receiver_local'\n");
+  fprintf(fp, "d['lcs_primary'] = [1.0, 0.0, 0.0]\n");
+  if (matrix_is_yxz(opts))
+    fprintf(fp, "d['lcs_axes'] = ['along_x', 'down_depth', 'normal_+y']\n");
+  else
+    fprintf(fp, "d['lcs_axes'] = ['x_tangent', 'y_tangent', 'normal_+z']\n");
   fprintf(fp, "d['ncell'] = %d\n", nc);
   fprintf(fp, "d['disloc_comp'] = %d\n", opts.disloc_comp);
   fprintf(fp, "d['testcase'] = %d\n", opts.testcase);
   fprintf(fp, "d['m'] = {}\n");
   pywrite(fp, "d['m']", mesh);
-  fprintf(fp, "d['matrix_components'] = ['xz', 'zz']\n");
+  if (const auto* bs = dynamic_cast<const BicubicBezierSurface*>(&surface)) {
+    const auto& ctrl = bs->get_control_values();
+    pywrite_double_array(fp, "d['bezier_ctrl_z']", nc, 16, ctrl.data());
+    fprintf(fp, "d['bezier_ctrl_layout'] = 'cell x (v*4+u)'\n");
+    fprintf(fp, "d['bezier_data'] = ['f', 'f_x', 'f_y', 'f_xy']\n");
+  }
+  fprintf(fp, "d['matrix_components'] = ['%s', '%s']\n",
+          matrix_zxy_comp_name(opts, 0), matrix_zxy_comp_name(opts, 1));
   for (int ai = 0; ai < matrix_zxy_ncomp; ++ai) {
-    std::string var = std::string("d['A_") + matrix_zxy_comp_names[ai] + "']";
+    std::string var = std::string("d['A_") + matrix_zxy_comp_name(opts, ai) + "']";
     pywrite_double_array(fp, var, nc, nc, &A[ai*nc*nc]);
   }
   if (not dislocs.empty()) {
@@ -1284,8 +1537,59 @@ static void write_matrix_zxy_py (FILE* fp, const MatrixZxyOpts& opts,
   }
 }
 
-static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts) {
+static int check_matrix_errors (const RealArray& reference,
+                                const RealArray& matrix_result,
+                                const Real abs_tol, const Real rel_tol) {
+  assert(reference.size() == matrix_result.size());
   int nerr = 0;
+  Real max_abs = 0;
+  for (size_t i = 0; i < reference.size(); ++i) {
+    const Real e = std::abs(matrix_result[i] - reference[i]);
+    max_abs = std::max(max_abs, e);
+    if (not std::isfinite(reference[i]) ||
+        not std::isfinite(matrix_result[i]) ||
+        (e > abs_tol && e > rel_tol*std::abs(reference[i]))) {
+      if (nerr < 10)
+        pr(puf(i/6) pu(i % 6) pu(reference[i]) pu(matrix_result[i])
+           pu(matrix_result[i] - reference[i]));
+      ++nerr;
+    }
+  }
+  if (nerr) printf("matrix verify max_abs %1.3e\n", max_abs);
+  return nerr;
+}
+
+static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts,
+                                       RealArray* A_out = nullptr) {
+  int nerr = 0;
+  throw_if(opts.surface != "yxz" && opts.surface != "zxy",
+           "matrix: surface must be yxz or zxy");
+  throw_if(opts.element != "tri" && opts.element != "quad",
+           "matrix: element must be tri or quad");
+  throw_if(!matrix_use_quads(opts) && opts.ntri != 2 && opts.ntri != 4,
+           "matrix: ntri must be 1, 2, or 4");
+  throw_if(opts.nx < 1 || (matrix_is_yxz(opts) ? opts.nz : opts.ny) < 1,
+           "matrix: grid dimensions must be positive");
+  if (matrix_is_yxz(opts))
+    throw_if(opts.lx <= 0 || opts.lz <= 0,
+             "matrix_yxz: lx and lz must be positive");
+  else
+    throw_if(opts.lx <= 0 || opts.ly <= 0,
+             "matrix_zxy: lx and ly must be positive");
+  throw_if(opts.disloc_comp < 0 || opts.disloc_comp > 2,
+           "matrix_yxz: disloccomp must be 0, 1, or 2");
+  throw_if(matrix_is_yxz(opts) && opts.flatelem,
+           "matrix_yxz: flatelem=1 is not supported");
+  throw_if(matrix_use_quads(opts) && opts.flatelem,
+           "matrix: element=quad does not support flatelem=1");
+  throw_if(opts.srfrecon && matrix_is_yxz(opts),
+           "matrix: srfrecon=1 currently supports only surface=zxy");
+  throw_if(opts.srfrecon && !matrix_use_quads(opts),
+           "matrix: bicubic srfrecon requires element=quad (or ntri=1)");
+  throw_if(opts.srfrecon && opts.flatelem,
+           "matrix: srfrecon=1 and flatelem=1 are mutually exclusive");
+  throw_if(opts.simple_output && matrix_is_yxz(opts),
+           "matrix: simple_output=1 supports only surface=zxy (A_xz/A_zz)");
 
   ZxFn::Shape zshape_dummy;
   gallery::ZxyFn::Shape zxy_shape;
@@ -1293,21 +1597,37 @@ static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts) {
   setup(opts.testcase, zshape_dummy, disloc, 0.8, &zxy_shape);
 
   ConvTest ct;
-  ct.init_zxy(zxy_shape, disloc);
+  if (matrix_is_yxz(opts))
+    ct.init_yxz(zxy_shape, disloc, opts.lx, opts.lz);
+  else
+    ct.init_zxy(zxy_shape, disloc, opts.lx, opts.ly);
   ConvTestSettings s;
   s.testcase = opts.testcase;
-  s.use_surface_recon = false;
-  s.use_four_tris_per_rect = (opts.ntri == 4);
+  s.use_surface_recon = opts.srfrecon;
+  s.use_four_tris_per_rect = (!matrix_use_quads(opts) && opts.ntri == 4);
   s.disloc_order = opts.dislocorder;
   s.use_flat_elements = opts.flatelem;
   set_settings(s, ct);
-  ct.set_nx_ny_zxy(opts.nx, opts.ny);
+  ct.set_use_quad_cells(matrix_use_quads(opts));
+  ct.set_nx_ny_zxy(opts.nx, matrix_is_yxz(opts) ? opts.nz : opts.ny);
   ct.set_verbosity(0);
-  ct.set_use_halfspace(false);
+  // Preserve the exact physical (x,z) parameterization; anisotropic UV
+  // scaling is not needed for this matrix path.
+  if (matrix_is_yxz(opts)) ct.set_mesh_scale(false);
+  ct.set_use_halfspace(opts.halfspace);
 
-  printf("matrix_zxy nx=%d ny=%d testcase=%d ntri=%d flatelem=%d dislocorder=%d disloccomp=%d\n",
-         opts.nx, opts.ny, opts.testcase, opts.ntri, int(opts.flatelem),
-         opts.dislocorder, opts.disloc_comp);
+  if (matrix_is_yxz(opts))
+    printf("matrix surface=yxz element=%s nx=%d nz=%d lx=%g lz=%g testcase=%d ntri=%d srfrecon=%d halfspace=%d dislocorder=%d disloccomp=%d\n",
+           matrix_use_quads(opts) ? "quad" : "tri",
+           opts.nx, opts.nz, opts.lx, opts.lz, opts.testcase, opts.ntri,
+           int(opts.srfrecon), int(opts.halfspace), opts.dislocorder,
+           opts.disloc_comp);
+  else
+    printf("matrix surface=zxy element=%s nx=%d ny=%d lx=%g ly=%g testcase=%d ntri=%d srfrecon=%d halfspace=%d dislocorder=%d disloccomp=%d\n",
+           matrix_use_quads(opts) ? "quad" : "tri",
+           opts.nx, opts.ny, opts.lx, opts.ly, opts.testcase, opts.ntri,
+           int(opts.srfrecon), int(opts.halfspace), opts.dislocorder,
+           opts.disloc_comp);
 
   Real t0 = acorn::dbg::gettime();
   ct.discretize();
@@ -1320,7 +1640,7 @@ static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts) {
   const auto nc = mesh.get_ncell();
 
   if (nc > 1000)
-    printf("matrix_zxy: ncell=%d (2*nc^2=%.2e doubles); large nx/ny may be slow.\n",
+    printf("matrix: ncell=%d (2*nc^2=%.2e doubles); large grids may be slow.\n",
            int(nc), double(matrix_zxy_ncomp)*nc*nc);
 
   Stress stress(d);
@@ -1334,21 +1654,22 @@ static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts) {
       Real s[6];
       stress.calc_matrix_entries(gfp, si, ri, opts.disloc_comp, s, o, onbr);
       for (int ai = 0; ai < matrix_zxy_ncomp; ++ai)
-        A[ai*nc*nc + ri*nc + si] = s[matrix_zxy_comps[ai]];
+        A[ai*nc*nc + ri*nc + si] = s[matrix_zxy_comp(opts, ai)];
     }
   }
   t1 = acorn::dbg::gettime();
   printf("fill matrix et %1.3e\n", t1 - t0);
+  if (A_out) *A_out = A;
 
   RealArray dd, sd;
   ct.eval(dd, sd, ConvTest::EvalMethod::direct);
 
   FILE* fp = fopen(opts.outfile.c_str(), "w");
   if (not fp) {
-    printf("matrix_zxy: cannot open %s\n", opts.outfile.c_str());
+    printf("matrix: cannot open %s\n", opts.outfile.c_str());
     return 1;
   }
-  write_matrix_zxy_py(fp, opts, mesh, nc, A, dd, sd);
+  write_matrix_zxy_py(fp, opts, mesh, *d->get_surface(), nc, A, dd, sd);
   fclose(fp);
   printf("wrote %s (ncell=%d)\n", opts.outfile.c_str(), int(nc));
 
@@ -1357,7 +1678,7 @@ static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts) {
     RealArray sd_selected(6*nc, 0);
     ompparfor for (Idx ri = 0; ri < nc; ++ri) {
       for (int ai = 0; ai < matrix_zxy_ncomp; ++ai) {
-        const int comp = matrix_zxy_comps[ai];
+        const int comp = matrix_zxy_comp(opts, ai);
         Real accum = 0;
         for (Idx si = 0; si < nc; ++si)
           accum += A[ai*nc*nc + ri*nc + si] * dd[3*si + opts.disloc_comp];
@@ -1365,11 +1686,13 @@ static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts) {
         sd_selected[6*ri + comp] = sd[6*ri + comp];
       }
     }
-    nerr += check_errors(sd_selected, sm, 1e5*mv3::eps, 1e7*mv3::eps);
+    nerr += check_matrix_errors(
+      sd_selected, sm, 1e5*mv3::eps, 1e7*mv3::eps);
     if (nerr)
-      printf("matrix_zxy: verify failed (A*disloc vs direct eval)\n");
+      printf("matrix surface=%s: verify failed (A*disloc vs direct eval)\n",
+             opts.surface.c_str());
     else
-      printf("matrix_zxy: verify passed\n");
+      printf("matrix surface=%s: verify passed\n", opts.surface.c_str());
   }
 
   return nerr;
@@ -1379,6 +1702,7 @@ static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts) {
 
 void run_matrix_zxy (const std::string& params) {
   MatrixZxyOpts opts;
+  bool ny_set = false, nz_set = false;
   const auto toks = acorn::split(params, ",");
   for (const auto& t : toks) {
     const auto keyval = acorn::split(t, "=");
@@ -1389,16 +1713,33 @@ void run_matrix_zxy (const std::string& params) {
       opts.outfile = val;
       continue;
     }
-    const int ival = std::stoi(val);
-    if (key.find("nx") != std::string::npos) opts.nx = ival;
-    else if (key.find("ny") != std::string::npos) opts.ny = ival;
-    else if (key.find("testcase") != std::string::npos) opts.testcase = ival;
-    else if (key.find("ntri") != std::string::npos) opts.ntri = ival;
-    else if (key.find("dislocorder") != std::string::npos) opts.dislocorder = ival;
-    else if (key.find("disloccomp") != std::string::npos) opts.disloc_comp = ival;
-    else if (key.find("flatelem") != std::string::npos) opts.flatelem = ival != 0;
-    else if (key.find("verify") != std::string::npos) opts.verify = ival != 0;
+    if (key == "surface") opts.surface = val;
+    else if (key == "element") opts.element = val;
+    else if (key == "lx") opts.lx = std::stod(val);
+    else if (key == "ly") opts.ly = std::stod(val);
+    else if (key == "lz") opts.lz = std::stod(val);
+    else {
+      const int ival = std::stoi(val);
+      if (key == "nx") opts.nx = ival;
+      else if (key == "ny") { opts.ny = ival; ny_set = true; }
+      else if (key == "nz") { opts.nz = ival; nz_set = true; }
+      else if (key == "testcase") opts.testcase = ival;
+      else if (key == "ntri") opts.ntri = ival;
+      else if (key == "dislocorder") opts.dislocorder = ival;
+      else if (key == "disloccomp") opts.disloc_comp = ival;
+      else if (key == "flatelem") opts.flatelem = ival != 0;
+      else if (key == "srfrecon") opts.srfrecon = ival != 0;
+      else if (key == "halfspace") opts.halfspace = ival != 0;
+      else if (key == "verify") opts.verify = ival != 0;
+      else if (key == "simple_output") opts.simple_output = ival != 0;
+      else throw std::runtime_error("run_matrix_zxy: unrecognized option " + key);
+    }
   }
+  // Backward compatibility with commands that used ny as the second grid
+  // dimension before surface=yxz introduced the clearer nz spelling.
+  if (matrix_is_yxz(opts) && ny_set && !nz_set) opts.nz = opts.ny;
+  if (opts.outfile.empty())
+    opts.outfile = matrix_is_yxz(opts) ? "yxz_A.py" : "zxy_A.py";
   build_and_write_matrix_zxy(opts);
 }
 
@@ -1766,15 +2107,360 @@ static int test_matrix_form () {
   return nerr;
 }
 
+static int test_yxz_geometry () {
+  int nerr = 0;
+  const int nx = 3, nz = 2;
+  const Real lx = 2, lz = 1;
+  const auto shape = gallery::ZxyFn::Shape::trig1_cosy;
+  const auto t = ConvTest::triangulate_yxz(nx, nz, lx, lz, shape, 2);
+
+  Real xmin = lx, xmax = 0, zmin = 0, zmax = -lz;
+  for (Idx vi = 0; vi < t->get_nvtx(); ++vi) {
+    const auto p = t->get_vtx(vi);
+    xmin = std::min(xmin, p[0]); xmax = std::max(xmax, p[0]);
+    zmin = std::min(zmin, p[2]); zmax = std::max(zmax, p[2]);
+  }
+  const Real tol = 1e4*mv3::eps;
+  if (std::abs(xmin) > tol || std::abs(xmax-lx) > tol ||
+      std::abs(zmin+lz) > tol || std::abs(zmax) > tol) {
+    printf("yxz geometry ranges: x [%g,%g], z [%g,%g]\n",
+           xmin, xmax, zmin, zmax);
+    ++nerr;
+  }
+
+  const auto tr = std::make_shared<TriangulationRelations>(t);
+  const auto m = tri2mesh(*t, tr);
+  ConvTest::DiscretizeArgs a;
+  a.use_surface_recon = false;
+  a.mesh_scale = false;
+  const auto d = ConvTest::discretize_yxz(m, shape, lx, lz, a);
+  const auto& srf = *d->get_surface();
+  for (Idx ci = 0; ci < srf.get_ncell(); ++ci) {
+    Real p[3], lcs[9];
+    srf.cell_ctr_xyz(ci, p);
+    srf.cell_ctr_lcs(ci, lcs);
+    if (not (p[0] > 0 && p[0] < lx && p[2] > -lz && p[2] < 0)) {
+      printf("yxz geometry cell center outside open domain\n");
+      ++nerr;
+      break;
+    }
+    if (std::abs(lcs[0]-1) > tol || std::abs(lcs[1]) > tol ||
+        std::abs(lcs[2]) > tol || lcs[7] <= 0) {
+      printf("yxz geometry unexpected LCS xhat or normal orientation\n");
+      ++nerr;
+      break;
+    }
+  }
+  return nerr;
+}
+
+static int test_zxy_scaled_geometry () {
+  int nerr = 0;
+  const int nx = 3, ny = 2;
+  const Real lx = 8, ly = 5;
+  const auto shape = gallery::ZxyFn::Shape::cos10_cos12_y;
+  const Real tol = 1e4*mv3::eps;
+
+  // Triangle vertices must span the requested physical rectangle while
+  // retaining the same normalized testcase shape and height amplitude.
+  const auto t = ConvTest::triangulate_zxy(nx, ny, shape, 4, lx, ly);
+  Real xmin = lx, xmax = 0, ymin = ly, ymax = 0;
+  for (Idx vi = 0; vi < t->get_nvtx(); ++vi) {
+    const auto p = t->get_vtx(vi);
+    xmin = std::min(xmin, p[0]); xmax = std::max(xmax, p[0]);
+    ymin = std::min(ymin, p[1]); ymax = std::max(ymax, p[1]);
+    Real z;
+    gallery::ZxyFn::eval(shape, p[0]/lx, p[1]/ly,
+                         z, nullptr, nullptr);
+    if (std::abs(p[2] - z) > tol) {
+      printf("scaled zxy triangle vertex is off normalized surface\n");
+      ++nerr;
+      break;
+    }
+  }
+  if (std::abs(xmin) > tol || std::abs(xmax-lx) > tol ||
+      std::abs(ymin) > tol || std::abs(ymax-ly) > tol) {
+    printf("scaled zxy ranges: x [%g,%g], y [%g,%g]\n",
+           xmin, xmax, ymin, ymax);
+    ++nerr;
+  }
+
+  // The analytic surface adapter must return physical-coordinate gradients.
+  const auto m = ConvTest::make_quad_mesh_zxy(nx, ny, shape, lx, ly);
+  ConvTest::DiscretizeArgs a;
+  a.use_surface_recon = false;
+  a.mesh_scale = false;
+  a.zxy_lx = lx;
+  a.zxy_ly = ly;
+  const auto d = ConvTest::discretize(m, nullptr, shape, a);
+  const auto& srf = *d->get_surface();
+  for (Idx ci = 0; ci < srf.get_ncell(); ++ci) {
+    Real p[3], lcs[9], z, zu, zv;
+    srf.cell_ctr_xyz(ci, p);
+    srf.cell_ctr_lcs(ci, lcs);
+    gallery::ZxyFn::eval(shape, p[0]/lx, p[1]/ly, z, &zu, &zv);
+    Real n[] = {-zu/lx, -zv/ly, 1};
+    mv3::normalize(n);
+    if (std::abs(p[2]-z) > tol || mv3::distance2(&lcs[6], n) > tol) {
+      printf("scaled zxy analytic surface or gradient mismatch\n");
+      ++nerr;
+      break;
+    }
+  }
+
+  // A scaled bicubic patch must match its unit-domain counterpart in z;
+  // its physical z derivatives differ by 1/lx and 1/ly.
+  const auto mu = ConvTest::make_quad_mesh_zxy(nx, ny, shape);
+  BicubicBezierSurface su(mu, shape);
+  BicubicBezierSurface ss(m, shape, lx, ly);
+  for (int j = 0; j < ny; ++j)
+    for (int i = 0; i < nx; ++i) {
+      const Idx ci = j*nx+i;
+      const Real u = (i + Real(0.37))/nx;
+      const Real v = (j + Real(0.61))/ny;
+      const Real uvu[] = {u, v};
+      const Real uvs[] = {lx*u, ly*v};
+      Real pu[3], ps[3], Ju[6], Js[6];
+      su.cell_position1(ci, uvu, pu, nullptr, nullptr, Ju);
+      ss.cell_position1(ci, uvs, ps, nullptr, nullptr, Js);
+      const Real err = std::max({
+        std::abs(ps[0]-lx*pu[0]), std::abs(ps[1]-ly*pu[1]),
+        std::abs(ps[2]-pu[2]), std::abs(Js[4]-Ju[4]/lx),
+        std::abs(Js[5]-Ju[5]/ly)});
+      if (err > tol) {
+        printf("scaled zxy bicubic surface mismatch: %1.3e\n", err);
+        ++nerr;
+        return nerr;
+      }
+    }
+  return nerr;
+}
+
+static int test_quad_mesh_zxy_yxz () {
+  int nerr = 0;
+  const int nx = 3, nsecond = 2;
+  const Real lx = 2, lz = 1;
+  const auto shape = gallery::ZxyFn::Shape::trig1_cosy;
+  for (const bool yxz : {false, true}) {
+    const auto m = yxz ?
+      ConvTest::make_quad_mesh_yxz(nx, nsecond, lx, lz, shape) :
+      ConvTest::make_quad_mesh_zxy(nx, nsecond, shape);
+    const auto& to = *m->get_topo();
+    const auto& vtxs = *m->get_vtxs();
+    if (m->get_ncell() != nx*nsecond ||
+        vtxs.get_nvtx() != (nx+1)*(nsecond+1)) {
+      printf("quad mesh %s: wrong entity counts\n", yxz ? "yxz" : "zxy");
+      ++nerr;
+    }
+    for (Idx ci = 0; ci < m->get_ncell(); ++ci)
+      if (to.get_cell(ci).n != 4) {
+        printf("quad mesh %s: cell %d does not have four vertices\n",
+               yxz ? "yxz" : "zxy", int(ci));
+        ++nerr;
+        break;
+      }
+
+    ConvTest::DiscretizeArgs a;
+    a.use_surface_recon = false;
+    a.mesh_scale = false;
+    const auto d = yxz ?
+      ConvTest::discretize_yxz(m, shape, lx, lz, a) :
+      ConvTest::discretize(m, nullptr, shape, a);
+    const auto& srf = *d->get_surface();
+    for (Idx ci = 0; ci < srf.get_ncell(); ++ci) {
+      Real p[3], f;
+      srf.cell_ctr_xyz(ci, p);
+      if (yxz)
+        gallery::ZxyFn::eval(shape, -p[2]/lz, p[0]/lx, f,
+                             nullptr, nullptr);
+      else
+        gallery::ZxyFn::eval(shape, p[0], p[1], f, nullptr, nullptr);
+      const Real actual = yxz ? p[1] : p[2];
+      if (std::abs(actual - f) > 1e4*mv3::eps) {
+        printf("quad mesh %s: cell center is off the analytic surface\n",
+               yxz ? "yxz" : "zxy");
+        ++nerr;
+        break;
+      }
+    }
+  }
+  return nerr;
+}
+
 static int test_matrix_form_zxy () {
+  int nerr = 0;
+  RealArray A_full, A_half;
+  for (const bool halfspace : {false, true}) {
+    MatrixZxyOpts opts;
+    opts.surface = "yxz";
+    opts.nx = 3;
+    opts.nz = 3;
+    opts.lx = 2;
+    opts.lz = 1;
+    opts.testcase = 20;
+    opts.disloc_comp = 0;
+    opts.halfspace = halfspace;
+    opts.verify = true;
+    opts.outfile = halfspace ? "/tmp/ctzx_yxz_matrix_halfspace_unittest.py" :
+                               "/tmp/ctzx_yxz_matrix_fullspace_unittest.py";
+    nerr += build_and_write_matrix_zxy(opts, halfspace ? &A_half : &A_full);
+  }
+  if (A_full.size() != A_half.size() || A_full.empty()) {
+    printf("matrix_yxz halfspace test: incompatible matrix sizes\n");
+    ++nerr;
+  } else {
+    Real max_diff = 0;
+    for (size_t i = 0; i < A_full.size(); ++i) {
+      if (not std::isfinite(A_full[i]) || not std::isfinite(A_half[i])) {
+        printf("matrix_yxz halfspace test: nonfinite matrix entry\n");
+        ++nerr;
+        break;
+      }
+      max_diff = std::max(max_diff, std::abs(A_full[i] - A_half[i]));
+    }
+    if (max_diff <= 1e3*mv3::eps) {
+      printf("matrix_yxz halfspace test: halfspace had no measurable effect\n");
+      ++nerr;
+    }
+  }
+
+  RealArray A_zxy_full, A_zxy_half;
+  for (const bool halfspace : {false, true}) {
+    MatrixZxyOpts opts;
+    opts.surface = "zxy";
+    opts.nx = 3;
+    opts.ny = 3;
+    opts.testcase = 20;
+    opts.disloc_comp = 0;
+    opts.halfspace = halfspace;
+    opts.verify = true;
+    opts.outfile = halfspace ? "/tmp/ctzx_zxy_matrix_halfspace_unittest.py" :
+                               "/tmp/ctzx_zxy_matrix_fullspace_unittest.py";
+    nerr += build_and_write_matrix_zxy(
+      opts, halfspace ? &A_zxy_half : &A_zxy_full);
+  }
+  if (A_zxy_full.size() != A_zxy_half.size() || A_zxy_full.empty()) {
+    printf("matrix_zxy halfspace test: incompatible matrix sizes\n");
+    ++nerr;
+  } else {
+    Real max_diff = 0;
+    for (size_t i = 0; i < A_zxy_full.size(); ++i) {
+      if (not std::isfinite(A_zxy_full[i]) ||
+          not std::isfinite(A_zxy_half[i])) {
+        printf("matrix_zxy halfspace test: nonfinite matrix entry\n");
+        ++nerr;
+        break;
+      }
+      max_diff = std::max(
+        max_diff, std::abs(A_zxy_full[i] - A_zxy_half[i]));
+    }
+    if (max_diff <= 1e3*mv3::eps) {
+      printf("matrix_zxy halfspace test: halfspace had no measurable effect\n");
+      ++nerr;
+    }
+  }
+  return nerr;
+}
+
+static int test_matrix_form_zxy_quads () {
+  int nerr = 0;
+  for (const std::string surface : {std::string("yxz"), std::string("zxy")})
+    for (const bool halfspace : {false, true}) {
+      MatrixZxyOpts opts;
+      opts.surface = surface;
+      opts.element = "quad";
+      opts.nx = 2;
+      opts.ny = 2;
+      opts.nz = 2;
+      opts.lx = 2;
+      opts.ly = 3;
+      opts.lz = 1;
+      opts.testcase = 20;
+      opts.disloc_comp = 0;
+      opts.halfspace = halfspace;
+      opts.verify = true;
+      opts.outfile = "/tmp/ctzx_" + surface + "_quad_matrix_" +
+        (halfspace ? "halfspace" : "fullspace") + "_unittest.py";
+      RealArray A;
+      nerr += build_and_write_matrix_zxy(opts, &A);
+      const int nc = opts.nx*(surface == "yxz" ? opts.nz : opts.ny);
+      if (A.size() != size_t(matrix_zxy_ncomp*nc*nc)) {
+        printf("matrix_%s quad test: wrong matrix size\n", surface.c_str());
+        ++nerr;
+      }
+    }
+  return nerr;
+}
+
+static int test_matrix_form_zxy_bicubic_recon () {
+  int nerr = 0;
+  for (const bool halfspace : {false, true}) {
+    MatrixZxyOpts opts;
+    opts.surface = "zxy";
+    opts.element = "quad";
+    opts.srfrecon = true;
+    opts.nx = 2;
+    opts.ny = 2;
+    opts.lx = 2;
+    opts.ly = 3;
+    opts.testcase = 70;
+    opts.disloc_comp = 0;
+    opts.halfspace = halfspace;
+    opts.verify = true;
+    opts.outfile = std::string("/tmp/ctzx_zxy_bicubic_matrix_") +
+      (halfspace ? "halfspace" : "fullspace") + "_unittest.py";
+    RealArray A;
+    nerr += build_and_write_matrix_zxy(opts, &A);
+    const int nc = opts.nx*opts.ny;
+    if (A.size() != size_t(matrix_zxy_ncomp*nc*nc)) {
+      printf("matrix_zxy bicubic test: wrong matrix size\n");
+      ++nerr;
+    }
+    for (const auto v : A)
+      if (!std::isfinite(v)) {
+        printf("matrix_zxy bicubic test: nonfinite matrix entry\n");
+        ++nerr;
+        break;
+      }
+  }
+  return nerr;
+}
+
+static int test_matrix_form_zxy_simple_output () {
+  int nerr = 0;
   MatrixZxyOpts opts;
-  opts.nx = 4;
-  opts.ny = 4;
-  opts.testcase = 20;
-  opts.disloc_comp = 0;
-  opts.verify = true;
-  opts.outfile = "./ctzx_zxy_matrix_unittest.py";
-  return build_and_write_matrix_zxy(opts);
+  opts.surface = "zxy";
+  opts.element = "quad";
+  opts.nx = 1;
+  opts.ny = 1;
+  opts.testcase = 70;
+  opts.simple_output = true;
+  opts.outfile = "/tmp/ctzx_zxy_simple_output_unittest.py";
+  nerr += build_and_write_matrix_zxy(opts);
+
+  std::ifstream is(opts.outfile);
+  const std::string text((std::istreambuf_iterator<char>(is)),
+                         std::istreambuf_iterator<char>());
+  const auto require = [&] (const char* token) {
+    if (text.find(token) == std::string::npos) {
+      printf("matrix_zxy simple output: missing %s\n", token);
+      ++nerr;
+    }
+  };
+  const auto reject = [&] (const char* token) {
+    if (text.find(token) != std::string::npos) {
+      printf("matrix_zxy simple output: unexpected %s\n", token);
+      ++nerr;
+    }
+  };
+  require("d['m']");
+  require("d['A_xz']");
+  require("d['A_zz']");
+  reject("d['testcase']");
+  reject("d['disloc']");
+  reject("d['sigma']");
+  reject("d['bezier_ctrl_z']");
+  return nerr;
 }
 
 static int test_hmatrix () {
@@ -1958,7 +2644,13 @@ int ConvTest::unittest () {
   rununittest(test_fast_woodland_methods);
   rununittest(test_fast_nonunirect);
   rununittest(test_matrix_form);
+  rununittest(test_yxz_geometry);
+  rununittest(test_zxy_scaled_geometry);
+  rununittest(test_quad_mesh_zxy_yxz);
   rununittest(test_matrix_form_zxy);
+  rununittest(test_matrix_form_zxy_quads);
+  rununittest(test_matrix_form_zxy_bicubic_recon);
+  rununittest(test_matrix_form_zxy_simple_output);
   rununittest(test_hmatrix);
   return nerr;
 }

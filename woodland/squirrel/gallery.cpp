@@ -70,9 +70,10 @@ void eval (const ZxFn::Shape shape, const Real x, Real& f, Real& g) {
 
 // Yudong 04/08/2026
 // trig1_cosy: z = Amx * (x*sin(2*pi*x) - 0.4) * (Bc + Amy*cos(2*pi*y))
-// cos10_cos12_y: z = 0.01*(cos(10*pi*x)-cos(12*pi*x)-2.5)*(1.5+cos(2*pi*y))
+// cos10_cos12_y (current testcase 70 parameters):
+// z = 0.001*(cos(2*pi*x)-cos(4*pi*x))*(2-2*cos(2*pi*y)).
 void ZxyFn::eval (const ZxyFn::Shape shape, const Real x, const Real y,
-                  Real& z, Real* zx, Real* zy) {
+                  Real& z, Real* zx, Real* zy, Real* zxy) {
   switch (shape) {
   case ZxyFn::Shape::trig1_cosy: {
     const Real twopi = 2*M_PI;
@@ -91,11 +92,16 @@ void ZxyFn::eval (const ZxyFn::Shape shape, const Real x, const Real y,
       const Real dBdy = -Amy*twopi*std::sin(twopi*y);
       *zy = A*dBdy;
     }
+    if (zxy) {
+      const Real dAdx = Amx*(sx + x*twopi*cx);
+      const Real dBdy = -Amy*twopi*std::sin(twopi*y);
+      *zxy = dAdx*dBdy;
+    }
   } break;
   case ZxyFn::Shape::cos10_cos12_y: {
     const Real twopi = 2*M_PI;
-    const Real c = 0.001;
-    // const Real c = 0;
+    // const Real c = 0.001;
+    const Real c = 0;
     // const Real Amy = 0.0;
     // const Real Bc  = 1;
     const Real Amy = -2; // Amy = 1.8;
@@ -114,13 +120,44 @@ void ZxyFn::eval (const ZxyFn::Shape shape, const Real x, const Real y,
       const Real dBdy = -twopi*Amy*std::sin(twopi*y);
       *zy = c*A*dBdy;
     }
+    if (zxy) {
+      const Real dAdx = (-2*M_PI*wn1*std::sin(2*M_PI*wn1*x) +
+                         2*M_PI*wn2*std::sin(2*M_PI*wn2*x));
+      const Real dBdy = -twopi*Amy*std::sin(twopi*y);
+      *zxy = c*dAdx*dBdy;
+    }
   } break;
   default:
     z = 0;
     if (zx) *zx = 0;
     if (zy) *zy = 0;
+    if (zxy) *zxy = 0;
     break;
   }
+}
+
+int ZxyFn::unittest () {
+  int nerr = 0;
+  const Real h = 1e-5;
+  for (const auto shape : {Shape::trig1_cosy, Shape::cos10_cos12_y})
+    for (int ix = 1; ix <= 4; ++ix)
+      for (int iy = 1; iy <= 4; ++iy) {
+        const Real x = Real(ix)/5, y = Real(iy)/5;
+        Real z, zx, zy, zxy;
+        eval(shape, x, y, z, &zx, &zy, &zxy);
+        Real zp, zxp, zyp, zm, zxm, zym;
+        eval(shape, x, y+h, zp, &zxp, &zyp);
+        eval(shape, x, y-h, zm, &zxm, &zym);
+        const Real zxy_from_zx = (zxp-zxm)/(2*h);
+        eval(shape, x+h, y, zp, &zxp, &zyp);
+        eval(shape, x-h, y, zm, &zxm, &zym);
+        const Real zxy_from_zy = (zyp-zym)/(2*h);
+        const Real tol = 1e-8*std::max(1.0, std::abs(zxy));
+        if (std::abs(zxy-zxy_from_zx) > tol ||
+            std::abs(zxy-zxy_from_zy) > tol)
+          ++nerr;
+      }
+  return nerr;
 }
 
 static Real calc_arclength (const ZxFn::Shape shape, const Real x) {
@@ -358,14 +395,17 @@ void Disloc::eval (const Real xy[2], Real disloc[3]) const {
 }
 
 // Yudong 03/11/2026
-void Disloc::eval_slope_xz (const Real xy[2], const Real lcs[9], Real disloc[3]) const {
+void Disloc::eval_slope_xz (const Real xy[2], const Real lcs[9], Real disloc[3],
+                            const Real x_scale) const {
   (void) lcs;
+  assert(x_scale > 0);
   const auto& d = ds[0];
   const Real A = eval_disloc_magnitude(d, xy);
 
   Real z;
   Real zx;
   ZxyFn::eval(zxy_shape_, xy[0], xy[1], z, &zx, nullptr);
+  zx /= x_scale;
 
   const Real nv = std::sqrt(1 + zx*zx);
   if (nv <= 0) {

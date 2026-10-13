@@ -8,8 +8,8 @@ namespace squirrel {
 
 // Partial implementation of Surface for the case of a parameterization
 // represented by a Mesh. The Mesh's Vertices object stores the global
-// parametric surface vertices (u,v). Vertices::get_ndim() may be 3 as long as
-// the first two dimensions provide (u,v).
+// parametric surface vertices (u,v). By default these are vertex dimensions
+// (0,1); uv_dim0 and uv_dim1 can select a different pair, such as (x,z).
 struct MeshBasedSurface : public Surface {
   typedef mesh::RealArray RealArray;
   typedef mesh::IdxArray IdxArray;
@@ -19,7 +19,8 @@ struct MeshBasedSurface : public Surface {
                    // aspect ratio. This improves the interaction integral
                    // calculation. If used, then cell_position must apply the
                    // inverse to the input (u,v) values.
-                   const bool scale = false);
+                   const bool scale = false,
+                   const int uv_dim0 = 0, const int uv_dim1 = 1);
 
   bool scale () const { return scale_; }
   bool scale (const Idx ci) const { return scale_ and sclidxs[ci] >= 0; }
@@ -41,10 +42,12 @@ protected:
 
 private:
   bool scale_;
+  int uv_dims_[2];
   IdxArray sclidxs;
   RealArray lambdas, Vts;
 
-  void init(const mesh::Mesh::CPtr& m, const bool scale);
+  void init(const mesh::Mesh::CPtr& m, const bool scale,
+            const int uv_dim0, const int uv_dim1);
 };
 
 void init_xhat_from_primary(const Real zhat[3], const Real primary[3],

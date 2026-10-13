@@ -53,10 +53,12 @@ void eval(const ZxFn::Shape shape, const Real x, Real& f, Real& g);
 // Function z(x,y) for (x,y) in [0,1]^2. Curved in both directions.
 struct ZxyFn {
   enum class Shape : int { trig1_cosy = 0, cos10_cos12_y = 1 };
-  // z = f(x,y), zx = partial z / partial x, zy = partial z / partial y.
-  // zx and zy may be nullptr if gradients are not needed.
+  // z = f(x,y), zx = partial z / partial x, zy = partial z / partial y,
+  // zxy = partial^2 z / partial x partial y. Derivative outputs may be nullptr.
   static void eval(const Shape shape, const Real x, const Real y,
-                   Real& z, Real* zx, Real* zy);
+                   Real& z, Real* zx, Real* zy, Real* zxy = nullptr);
+
+  static int unittest();
 };
 
 // Dislocation shapes as a function of (x,y).
@@ -91,7 +93,8 @@ struct Disloc {
 
   void eval(const Real xy[2], Real disloc[3]) const;
   // When set_slope_xz was used: requires LCS at (xy) to output slip in local frame.
-  void eval_slope_xz(const Real xy[2], const Real lcs[9], Real disloc[3]) const;
+  void eval_slope_xz(const Real xy[2], const Real lcs[9], Real disloc[3],
+                     const Real x_scale = 1) const;
 
   bool use_slope_xz() const { return use_slope_xz_; }
 

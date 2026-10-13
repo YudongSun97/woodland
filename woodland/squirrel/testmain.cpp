@@ -12,7 +12,7 @@ struct Command {
   // surface. w is Woodland, o is Okada.
   // ct_stress_zxy: stress calculation on z=f(x,y) surface (no exact reference).
   // Yudong 03/04/2026: ct_stress_zxy_exact: Exact reference for z=f(x,y) surface.
-  // ct_matrix_zxy: influence matrices on z=f(x,y) surface.
+  // ct_matrix_zxy: influence matrices on y=f(x,z) surface.
   enum Enum : int
     { unittest = 0, runcase,
       ct_we_zx, ct_oe_zx, ct_stress_zxy, ct_stress_zxy_exact, ct_matrix_zxy,
@@ -82,9 +82,10 @@ int main (int argc, char** argv) {
   case Command::ct_stress_zxy_exact:
   case Command::ct_matrix_zxy: {
     std::string params;
-    if (command == Command::ct_stress_zxy ||
-        command == Command::ct_stress_zxy_exact ||
-        command == Command::ct_matrix_zxy)
+    if (command == Command::ct_matrix_zxy)
+      params = "surface=yxz,nx=4,nz=4,lx=1,lz=1,testcase=20";
+    else if (command == Command::ct_stress_zxy ||
+             command == Command::ct_stress_zxy_exact)
       params = "nx=4,ny=4,srfrecon=0,testcase=20";
     else
       params = "testcase=0";

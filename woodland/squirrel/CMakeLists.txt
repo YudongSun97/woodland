@@ -1,4 +1,6 @@
 set(WOODLAND_SQUIRREL_SRCS
+  bicubic_bezier.cpp
+  bicubic_bezier_surface.cpp
   bezier_cubic.cpp
   calc_stress.cpp
   ctzx.cpp
@@ -9,6 +11,7 @@ set(WOODLAND_SQUIRREL_SRCS
   discretization.cpp
   exact.cpp
   gallery.cpp
+  global_y_surface.cpp
   global_z_surface.cpp
   greens_function.cpp
   mesh_based_surface.cpp
@@ -19,6 +22,8 @@ set(WOODLAND_SQUIRREL_SRCS
   unittest.cpp)
 
 set(WOODLAND_SQUIRREL_HEADERS
+  bicubic_bezier.hpp
+  bicubic_bezier_surface.hpp
   bezier_cubic.hpp
   calc_stress.hpp
   ctzx.hpp
@@ -27,6 +32,7 @@ set(WOODLAND_SQUIRREL_HEADERS
   discretization.hpp
   exact.hpp
   gallery.hpp
+  global_y_surface.hpp
   global_z_surface.hpp
   greens_function.hpp
   mesh_based_surface.hpp
