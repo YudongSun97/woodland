@@ -13,6 +13,7 @@
 #include "woodland/squirrel/pywrite.hpp"
 #include "woodland/squirrel/mesh.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iterator>
