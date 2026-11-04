@@ -58,6 +58,13 @@ struct ZxyFn {
   static void eval(const Shape shape, const Real x, const Real y,
                    Real& z, Real* zx, Real* zy, Real* zxy = nullptr);
 
+  // Yudong 10/27/2026
+  // Amplitude c of cos10_cos12_y (z is not scaled by lx, ly: c is in the units
+  // of the mesh, e.g. m). Default 0, the planar fault. Set it before the
+  // surface is discretized (ct_matrix_zxy option amp=); it is process wide.
+  static void set_cos10_cos12_amp(const Real c);
+  static Real get_cos10_cos12_amp();
+
   static int unittest();
 };
 

@@ -1430,6 +1430,8 @@ struct MatrixZxyOpts {
   int ntri = 2;
   int dislocorder = 2;
   int disloc_comp = 0;
+  // Yudong 10/27/2026: amplitude c of the cos10_cos12_y surface (testcase 70-84)
+  Real amp = 0;
   bool flatelem = false;
   bool srfrecon = false;
   bool halfspace = false;
@@ -1512,6 +1514,7 @@ static void write_matrix_zxy_py (FILE* fp, const MatrixZxyOpts& opts,
   fprintf(fp, "d['ncell'] = %d\n", nc);
   fprintf(fp, "d['disloc_comp'] = %d\n", opts.disloc_comp);
   fprintf(fp, "d['testcase'] = %d\n", opts.testcase);
+  fprintf(fp, "d['amp'] = %.17g\n", opts.amp);
   fprintf(fp, "d['m'] = {}\n");
   pywrite(fp, "d['m']", mesh);
   if (const auto* bs = dynamic_cast<const BicubicBezierSurface*>(&surface)) {
@@ -1560,9 +1563,9 @@ static int check_matrix_errors (const RealArray& reference,
   return nerr;
 }
 
-static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts,
-                                       RealArray* A_out = nullptr) {
-  int nerr = 0;
+// Yudong: 2026-10-14, check opts, set up and discretize ct (shared by the
+// dense matrix path and MatrixZxyEvaluator).
+static void setup_matrix_zxy (const MatrixZxyOpts& opts, ConvTest& ct) {
   throw_if(opts.surface != "yxz" && opts.surface != "zxy",
            "matrix: surface must be yxz or zxy");
   throw_if(opts.element != "tri" && opts.element != "quad",
@@ -1596,8 +1599,11 @@ static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts,
   gallery::ZxyFn::Shape zxy_shape;
   Disloc::Ptr disloc;
   setup(opts.testcase, zshape_dummy, disloc, 0.8, &zxy_shape);
+  // Yudong 10/27/2026: surface amplitude, before the surface is discretized
+  throw_if(opts.amp != 0 && zxy_shape != gallery::ZxyFn::Shape::cos10_cos12_y,
+           "matrix: amp= applies only to the cos10_cos12_y surface (testcase 70-84)");
+  gallery::ZxyFn::set_cos10_cos12_amp(opts.amp);
 
-  ConvTest ct;
   if (matrix_is_yxz(opts))
     ct.init_yxz(zxy_shape, disloc, opts.lx, opts.lz);
   else
@@ -1624,16 +1630,23 @@ static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts,
            int(opts.srfrecon), int(opts.halfspace), opts.dislocorder,
            opts.disloc_comp);
   else
-    printf("matrix surface=zxy element=%s nx=%d ny=%d lx=%g ly=%g testcase=%d ntri=%d srfrecon=%d halfspace=%d dislocorder=%d disloccomp=%d\n",
+    printf("matrix surface=zxy element=%s nx=%d ny=%d lx=%g ly=%g testcase=%d ntri=%d srfrecon=%d halfspace=%d dislocorder=%d disloccomp=%d amp=%g\n",
            matrix_use_quads(opts) ? "quad" : "tri",
            opts.nx, opts.ny, opts.lx, opts.ly, opts.testcase, opts.ntri,
            int(opts.srfrecon), int(opts.halfspace), opts.dislocorder,
-           opts.disloc_comp);
+           opts.disloc_comp, opts.amp);
 
   Real t0 = acorn::dbg::gettime();
   ct.discretize();
   Real t1 = acorn::dbg::gettime();
   printf("discretize et %1.3e\n", t1 - t0);
+}
+
+static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts,
+                                       RealArray* A_out = nullptr) {
+  int nerr = 0;
+  ConvTest ct;
+  setup_matrix_zxy(opts, ct);
 
   const auto d = ct.get_discretization();
   const auto& gfp = ct.get_gfp();
@@ -1649,7 +1662,7 @@ static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts,
   set_standard_options(o, onbr);
 
   RealArray A(matrix_zxy_ncomp*nc*nc);
-  t0 = acorn::dbg::gettime();
+  Real t0 = acorn::dbg::gettime(), t1;
   ompparfor for (Idx si = 0; si < nc; ++si) {
     for (Idx ri = 0; ri < nc; ++ri) {
       Real s[6];
@@ -1699,9 +1712,7 @@ static int build_and_write_matrix_zxy (const MatrixZxyOpts& opts,
   return nerr;
 }
 
-} // namespace
-
-void run_matrix_zxy (const std::string& params) {
+static MatrixZxyOpts parse_matrix_zxy_opts (const std::string& params) {
   MatrixZxyOpts opts;
   bool ny_set = false, nz_set = false;
   const auto toks = acorn::split(params, ",");
@@ -1719,6 +1730,7 @@ void run_matrix_zxy (const std::string& params) {
     else if (key == "lx") opts.lx = std::stod(val);
     else if (key == "ly") opts.ly = std::stod(val);
     else if (key == "lz") opts.lz = std::stod(val);
+    else if (key == "amp") opts.amp = std::stod(val);
     else {
       const int ival = std::stoi(val);
       if (key == "nx") opts.nx = ival;
@@ -1739,9 +1751,109 @@ void run_matrix_zxy (const std::string& params) {
   // Backward compatibility with commands that used ny as the second grid
   // dimension before surface=yxz introduced the clearer nz spelling.
   if (matrix_is_yxz(opts) && ny_set && !nz_set) opts.nz = opts.ny;
+  return opts;
+}
+
+} // namespace
+
+void run_matrix_zxy (const std::string& params) {
+  auto opts = parse_matrix_zxy_opts(params);
   if (opts.outfile.empty())
     opts.outfile = matrix_is_yxz(opts) ? "yxz_A.py" : "zxy_A.py";
   build_and_write_matrix_zxy(opts);
+}
+
+// Yudong: 2026-10-14
+// On-demand entries of the run_matrix_zxy influence matrices.
+struct MatrixZxyEvaluator::Impl {
+  MatrixZxyOpts opts;
+  ConvTest ct;
+  Discretization::CPtr d;
+  Stress::Ptr stress;
+  Stress::Options o, onbr;
+  int comps[ncomp];
+};
+
+MatrixZxyEvaluator::MatrixZxyEvaluator (const std::string& params)
+  : p(std::make_shared<Impl>())
+{
+  p->opts = parse_matrix_zxy_opts(params);
+  setup_matrix_zxy(p->opts, p->ct);
+  p->d = p->ct.get_discretization();
+  p->stress = Stress::create(p->d);
+  set_standard_options(p->o, p->onbr);
+  for (int ai = 0; ai < ncomp; ++ai)
+    p->comps[ai] = matrix_zxy_comp(p->opts, ai);
+}
+
+Idx MatrixZxyEvaluator::get_ncell () const {
+  return p->d->get_mesh()->get_ncell();
+}
+
+void MatrixZxyEvaluator
+::calc_entries (const Idx isrc, const Idx ircv, Real a[ncomp]) const {
+  Real s[6];
+  p->stress->calc_matrix_entries(p->ct.get_gfp(), isrc, ircv,
+                                 p->opts.disloc_comp, s, p->o, p->onbr);
+  for (int ai = 0; ai < ncomp; ++ai) a[ai] = s[p->comps[ai]];
+}
+
+// Yudong 10/27/2026
+void MatrixZxyEvaluator
+::calc_bc_entries (const Idx ircv, Real b[ncomp]) const {
+  const auto& opts = p->opts;
+  throw_if(matrix_is_yxz(opts) || opts.halfspace,
+           "calc_bc_entries: only surface=zxy, halfspace=0");
+  const auto& gfp = p->ct.get_gfp();
+  const auto& srf = *p->d->get_surface();
+  // the flat rectangle: local frame = global frame, so the dislocation is
+  // the unit vector of component disloccomp, as in calc_matrix_entries
+  const Real src[] = {opts.lx/2, opts.ly/2, 0}, nml[] = {0, 0, 1},
+    tangent[] = {1, 0, 0}, lens[] = {opts.lx, opts.ly};
+  Real disloc[3] = {0};
+  disloc[opts.disloc_comp] = 1;
+  Real rcv[3], lcs[9], s[6];
+  srf.cell_ctr_xyz(ircv, rcv);
+  acorn::fs3d::calc_sigma_const_disloc_rect_okada(
+    gfp.lam, gfp.mu, src, nml, tangent, lens, disloc, rcv, s);
+  srf.cell_ctr_lcs(ircv, lcs);
+  acorn::rotate_sym_tensor_3x3_RARt(lcs, s);
+  for (int ai = 0; ai < ncomp; ++ai) b[ai] = s[p->comps[ai]];
+}
+
+void run_bc_zxy (const std::string& params) {
+  MatrixZxyEvaluator e(params);
+  auto opts = parse_matrix_zxy_opts(params);
+  if (opts.outfile.empty()) opts.outfile = "zxy_bc.txt";
+  const Idx nc = e.get_ncell();
+  std::vector<Real> b(MatrixZxyEvaluator::ncomp*nc);
+  ompparfor for (Idx ri = 0; ri < nc; ++ri)
+    e.calc_bc_entries(ri, &b[MatrixZxyEvaluator::ncomp*ri]);
+  FILE* fp = fopen(opts.outfile.c_str(), "w");
+  throw_if(not fp, "run_bc_zxy: cannot open " + opts.outfile);
+  for (Idx ri = 0; ri < nc; ++ri)
+    fprintf(fp, "%.17e %.17e\n", b[2*ri], b[2*ri+1]);
+  fclose(fp);
+  printf("wrote %s (ncell=%d)\n", opts.outfile.c_str(), int(nc));
+}
+
+void MatrixZxyEvaluator::write_mesh_py (const std::string& fname) const {
+  FILE* fp = fopen(fname.c_str(), "w");
+  throw_if(not fp, "write_mesh_py: cannot open " + fname);
+  pywrite_header(fp);
+  fprintf(fp, "d = {}\n");
+  fprintf(fp, "d['m'] = {}\n");
+  pywrite(fp, "d['m']", *p->d->get_mesh());
+  fclose(fp);
+}
+
+void run_mesh_zxy (const std::string& params) {
+  MatrixZxyEvaluator e(params);
+  auto opts = parse_matrix_zxy_opts(params);
+  if (opts.outfile.empty())
+    opts.outfile = matrix_is_yxz(opts) ? "yxz_mesh.py" : "zxy_mesh.py";
+  e.write_mesh_py(opts.outfile);
+  printf("wrote %s (ncell=%d)\n", opts.outfile.c_str(), int(e.get_ncell()));
 }
 
 void run_case (const std::string& params) {

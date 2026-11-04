@@ -13,10 +13,11 @@ struct Command {
   // ct_stress_zxy: stress calculation on z=f(x,y) surface (no exact reference).
   // Yudong 03/04/2026: ct_stress_zxy_exact: Exact reference for z=f(x,y) surface.
   // ct_matrix_zxy: influence matrices on y=f(x,z) surface.
+  // Yudong 10/14/2026: ct_mesh_zxy: only the mesh of ct_matrix_zxy.
   enum Enum : int
     { unittest = 0, runcase,
       ct_we_zx, ct_oe_zx, ct_stress_zxy, ct_stress_zxy_exact, ct_matrix_zxy,
-      invalid };
+      ct_mesh_zxy, ct_bc_zxy, invalid };
   static Enum convert(const int i);
   static Enum convert(const std::string& e);
   static std::string convert(const Enum e);
@@ -38,6 +39,8 @@ Command::Enum Command::convert (const std::string& e) {
   // Yudong 03/04/2026
   if (e == "ct_stress_zxy_exact") return ct_stress_zxy_exact;
   if (e == "ct_matrix_zxy") return ct_matrix_zxy;
+  if (e == "ct_mesh_zxy") return ct_mesh_zxy;
+  if (e == "ct_bc_zxy") return ct_bc_zxy;
   return invalid;
 }
 
@@ -51,6 +54,8 @@ std::string Command::convert (const Command::Enum e) {
   // Yudong 03/04/2026
   case ct_stress_zxy_exact: return "ct_stress_zxy_exact";
   case ct_matrix_zxy: return "ct_matrix_zxy";
+  case ct_mesh_zxy: return "ct_mesh_zxy";
+  case ct_bc_zxy: return "ct_bc_zxy";
   case invalid:
   default: return "invalid";
   }
@@ -80,9 +85,12 @@ int main (int argc, char** argv) {
   case Command::ct_stress_zxy:
   // Yudong 03/04/2026
   case Command::ct_stress_zxy_exact:
-  case Command::ct_matrix_zxy: {
+  case Command::ct_matrix_zxy:
+  case Command::ct_mesh_zxy:
+  case Command::ct_bc_zxy: {
     std::string params;
-    if (command == Command::ct_matrix_zxy)
+    if (command == Command::ct_matrix_zxy || command == Command::ct_mesh_zxy ||
+        command == Command::ct_bc_zxy)
       params = "surface=yxz,nx=4,nz=4,lx=1,lz=1,testcase=20";
     else if (command == Command::ct_stress_zxy ||
              command == Command::ct_stress_zxy_exact)
@@ -98,6 +106,8 @@ int main (int argc, char** argv) {
     // Yudong 03/04/2026
     case Command::ct_stress_zxy_exact: ctzx::run_stress_zxy_exact(params); break;
     case Command::ct_matrix_zxy: ctzx::run_matrix_zxy(params); break;
+    case Command::ct_mesh_zxy: ctzx::run_mesh_zxy(params); break;
+    case Command::ct_bc_zxy: ctzx::run_bc_zxy(params); break;
     default: assert(0);
     }
   } break;

@@ -14,6 +14,7 @@ set(WOODLAND_SQUIRREL_SRCS
   global_y_surface.cpp
   global_z_surface.cpp
   greens_function.cpp
+  matrix_zxy_capi.cpp
   mesh_based_surface.cpp
   mesh.cpp
   pywrite.cpp
@@ -35,6 +36,7 @@ set(WOODLAND_SQUIRREL_HEADERS
   global_y_surface.hpp
   global_z_surface.hpp
   greens_function.hpp
+  matrix_zxy_capi.h
   mesh_based_surface.hpp
   mesh.hpp
   pywrite.hpp

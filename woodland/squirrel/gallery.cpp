@@ -68,10 +68,16 @@ void eval (const ZxFn::Shape shape, const Real x, Real& f, Real& g) {
   }
 }
 
+// Yudong 10/27/2026: amplitude of cos10_cos12_y, see set_cos10_cos12_amp.
+static Real cos10_cos12_amp = 0;
+void ZxyFn::set_cos10_cos12_amp (const Real c) { cos10_cos12_amp = c; }
+Real ZxyFn::get_cos10_cos12_amp () { return cos10_cos12_amp; }
+
 // Yudong 04/08/2026
 // trig1_cosy: z = Amx * (x*sin(2*pi*x) - 0.4) * (Bc + Amy*cos(2*pi*y))
 // cos10_cos12_y (current testcase 70 parameters):
-// z = 0.001*(cos(2*pi*x)-cos(4*pi*x))*(2-2*cos(2*pi*y)).
+// z = c*(cos(2*pi*x)-cos(4*pi*x))*(2-2*cos(2*pi*y)), c = cos10_cos12_amp
+// (option amp=, default 0).
 void ZxyFn::eval (const ZxyFn::Shape shape, const Real x, const Real y,
                   Real& z, Real* zx, Real* zy, Real* zxy) {
   switch (shape) {
@@ -101,7 +107,7 @@ void ZxyFn::eval (const ZxyFn::Shape shape, const Real x, const Real y,
   case ZxyFn::Shape::cos10_cos12_y: {
     const Real twopi = 2*M_PI;
     // const Real c = 0.001;
-    const Real c = 0;
+    const Real c = cos10_cos12_amp;
     // const Real Amy = 0.0;
     // const Real Bc  = 1;
     const Real Amy = -2; // Amy = 1.8;

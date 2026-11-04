@@ -295,7 +295,51 @@ void run_stress_zxy_exact(const std::string& params);
 // x in [0,lx], y in [0,ly]. Params: surface=, nx=, ny= or nz=, lx=, ly=, lz=,
 // testcase=, element=tri|quad, ntri=1|2|4, halfspace=, verify=, out=,
 // disloccomp=. ntri=1 is an alias for element=quad.
+// Yudong 10/27/2026: amp= amplitude c of the cos10_cos12_y surface (testcase
+// 70-84), z = c*(cos(2*pi*u)-cos(4*pi*u))*(2-2*cos(2*pi*v)), u = x/lx, v = y/ly,
+// in the units of lx, ly; default 0 (planar). Entries are in the receiver local
+// frame (x tangent, y tangent, normal), source slip along the local x tangent.
 void run_matrix_zxy(const std::string& params);
+
+// Yudong: 2026-10-14
+// Entries of the run_matrix_zxy influence matrices computed on demand, so that
+// an H-matrix (hmmvp) can be built without forming the dense matrix. params are
+// those of run_matrix_zxy (out= is ignored). calc_entries is const and thread
+// safe, as in the OpenMP loop of run_matrix_zxy.
+class MatrixZxyEvaluator {
+public:
+  typedef std::shared_ptr<MatrixZxyEvaluator> Ptr;
+  // Components: A_xz, A_zz for surface=zxy; A_xy, A_yy for surface=yxz.
+  static constexpr int ncomp = 2;
+
+  MatrixZxyEvaluator(const std::string& params);
+  Idx get_ncell() const;
+  // a[ai] = A_ai(ircv, isrc), 0-based cell indices.
+  void calc_entries(const Idx isrc, const Idx ircv, Real a[ncomp]) const;
+  // Yudong 10/27/2026
+  // b[ai] = stress component ai (receiver local frame, as calc_entries) at the
+  // center of cell ircv due to a uniform unit dislocation (component
+  // disloccomp) on the FLAT rectangle [0,lx] x [0,ly] at z = 0, whole space
+  // (Okada dc3d). The boundary condition of a fault embedded in a plane z = 0
+  // that slips uniformly outside it: tau_load(t) = -b*V_pl*t. surface=zxy,
+  // halfspace=0 only.
+  void calc_bc_entries(const Idx ircv, Real b[ncomp]) const;
+  // Write d['m']['topo'], d['m']['vtx'] as in simple_output=1.
+  void write_mesh_py(const std::string& fname) const;
+
+private:
+  struct Impl;
+  std::shared_ptr<Impl> p;
+};
+
+// Write only the mesh of run_matrix_zxy (no matrix). Params as run_matrix_zxy;
+// out= defaults to zxy_mesh.py.
+void run_mesh_zxy(const std::string& params);
+
+// Yudong 10/27/2026
+// calc_bc_entries for every cell, written as text, one line per cell:
+// 'B_xz B_zz'. Params as run_matrix_zxy; out= defaults to zxy_bc.txt.
+void run_bc_zxy(const std::string& params);
 
 // o_nbr is set to o before filling it. Thus, set fields in o that will be
 // common to both.
