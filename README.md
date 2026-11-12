@@ -12,6 +12,10 @@ In the future, the directory `woodland/squirrel` will contain a DDM
 discretization based on these tools. Currently, it is a work in progress and
 contains only a discretization to support a convergence test.
 
+The directory `woodland/marmot` builds the DDM Green's function matrix for a
+fault of arbitrary 3D shape, given as a structured grid of points. It fits a
+C1 bicubic Bezier surface to the grid; see `woodland/marmot/README.md`.
+
 Finally, the directory `woodland/oak` will contain a simple quasidynamic
 rate-state friction simulator to demonstrate the use of the operator.
 

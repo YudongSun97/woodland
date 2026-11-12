@@ -24,6 +24,7 @@ endif()
 
 add_subdirectory(woodland/acorn)
 add_subdirectory(woodland/squirrel)
+add_subdirectory(woodland/marmot)
 
 install(EXPORT woodland DESTINATION cmake)
 install(FILES cmake/woodland-config.cmake DESTINATION cmake)

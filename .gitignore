@@ -16,9 +16,17 @@ woodland/acorn/acorn_config.h
 *.o
 woodland/acorn/woodland_acorn_unittest
 woodland/squirrel/woodland_squirrel_unittest
+woodland/marmot/woodland_marmot_unittest
+
+# unit test outputs
+woodland/marmot/tmp/
 
 # make install output, job logs
 woodland_install/
 slurm-*.out
 *_[0-9]*.out
 
+
+# python
+__pycache__/
+*.pyc
