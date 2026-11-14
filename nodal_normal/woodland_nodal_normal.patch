@@ -1,0 +1,479 @@
+diff -ruN -x build* -x install -x .DS_Store a/woodland/squirrel/CMakeLists.txt b/woodland/squirrel/CMakeLists.txt
+--- a/woodland/squirrel/CMakeLists.txt	2026-10-14 15:31:22
++++ b/woodland/squirrel/CMakeLists.txt	2026-11-11 17:24:10
+@@ -16,6 +16,7 @@
+   greens_function.cpp
+   mesh_based_surface.cpp
+   mesh.cpp
++  nn_flat.cpp
+   pywrite.cpp
+   solver1d.cpp
+   testmain.cpp
+diff -ruN -x build* -x install -x .DS_Store a/woodland/squirrel/calc_stress.cpp b/woodland/squirrel/calc_stress.cpp
+--- a/woodland/squirrel/calc_stress.cpp	2026-10-14 15:31:22
++++ b/woodland/squirrel/calc_stress.cpp	2026-11-11 17:56:16
+@@ -118,22 +118,32 @@
+ 
+   void eval (const int n, CRPtr xys_lcs, CRPtr J_times_pdirs,
+              RPtr integrands) const {
+-    const int nper = 16;
++    const int nper = 26;
+     if (wrk.size() < size_t(n*nper)) wrk.resize(n*nper);
+     RPtr p_gcs = wrk.data();
+     RPtr lcs = p_gcs + 3*n;
+     RPtr jacdet = lcs + 9*n;
+     RPtr disloc_lcs = jacdet + n;
++    RPtr slip_lcs = disloc_lcs + 3*n;
++    RPtr smag = slip_lcs + 9*n;
+ 
+     const bool mult_by_R3 = J_times_pdirs;
+ 
+     srf->cell_position(isrc, n, xys_lcs, p_gcs, lcs, jacdet);
++    // Slip frame (nodal-normal test); the kernel keeps the geometric normal.
++    const bool own_slip_lcs = srf->cell_slip_lcs(isrc, n, xys_lcs, slip_lcs);
+     d->reconstruct_ci(isrc, ndisloc, coefs, n, disloc_ctr_lcs, xys_lcs,
+                       disloc_lcs);
++    if (srf->slip_magnitude(n, p_gcs, smag))
++      for (int k = 0; k < n; ++k) {
++        disloc_lcs[3*k] = smag[k];
++        disloc_lcs[3*k+1] = disloc_lcs[3*k+2] = 0;
++      }
+ 
+     for (int k = 0; k < n; ++k) {
+       Real disloc_gcs[3];
+-      mv3::tmatvec(&lcs[9*k], &disloc_lcs[3*k], disloc_gcs);
++      mv3::tmatvec(own_slip_lcs ? &slip_lcs[9*k] : &lcs[9*k],
++                   &disloc_lcs[3*k], disloc_gcs);
+ 
+       const auto integrand = &integrands[nsigma*k];
+       if (halfspace_terms)
+@@ -316,7 +326,7 @@
+     Real s[6];
+     calc_s1_r1(sj_disloc, coefs, gfp, sj, ri, s, nbrs ? o_nbrs : o);
+     Real lcs[9];
+-    srf.cell_ctr_lcs(ri, lcs);
++    srf.cell_ctr_slip_lcs(ri, lcs);
+     acorn::rotate_sym_tensor_3x3_RARt(lcs, s);
+     for (int i = 0; i < 6; ++i)
+       sigma[i] += s[i];
+diff -ruN -x build* -x install -x .DS_Store a/woodland/squirrel/ctzx.hpp b/woodland/squirrel/ctzx.hpp
+--- a/woodland/squirrel/ctzx.hpp	2026-10-14 15:31:22
++++ b/woodland/squirrel/ctzx.hpp	2026-11-11 17:24:10
+@@ -287,6 +287,8 @@
+ void convtest_o_vs_e(const std::string& params);
+ // Stress on z=f(x,y): init_zxy, discretize, eval (no exact reference). Params: nx=, ny=, srfrecon=0, testcase=, ntri=.
+ void run_stress_zxy(const std::string& params);
++// Nodal-normal test on flat triangles (nn_flat.cpp).
++void run_nn_flat(const std::string& params);
+ // Yudong 03/04/2026
+ // Stress on z=f(x,y): init_zxy, discretize, eval_exact_at_cell_ctrs (Exact reference) and optionally compare to eval.
+ void run_stress_zxy_exact(const std::string& params);
+diff -ruN -x build* -x install -x .DS_Store a/woodland/squirrel/ctzx_eval.cpp b/woodland/squirrel/ctzx_eval.cpp
+--- a/woodland/squirrel/ctzx_eval.cpp	2026-10-14 15:31:22
++++ b/woodland/squirrel/ctzx_eval.cpp	2026-11-11 17:23:03
+@@ -117,7 +117,7 @@
+       for (int i = 0; i < 6; ++i) sigma[i] += s[i];
+     }
+     Real lcs[9];
+-    srf.cell_ctr_lcs(ir, lcs);
++    srf.cell_ctr_slip_lcs(ir, lcs);
+     acorn::rotate_sym_tensor_3x3_RARt(lcs, sigma);
+   }
+   if (verbosity > 0) printf("\n");
+diff -ruN -x build* -x install -x .DS_Store a/woodland/squirrel/ctzx_surface.cpp b/woodland/squirrel/ctzx_surface.cpp
+--- a/woodland/squirrel/ctzx_surface.cpp	2026-10-14 15:31:22
++++ b/woodland/squirrel/ctzx_surface.cpp	2026-11-11 17:27:10
+@@ -495,6 +495,7 @@
+ void FlatElementSurface
+ ::init (const Triangulation::CPtr& t_, const Real primary[3]) {
+   t = t_;
++  mv3::copy(primary, primary_);
+   const auto& rt = *t;
+   const auto ntri = rt.get_ncell();
+   lcss.resize(ntri);
+@@ -567,6 +568,77 @@
+ }
+ 
+ bool FlatElementSurface::supports_J () const { return true; }
++
++void FlatElementSurface::set_vertex_normals (const std::vector<Real>& vn) {
++  throw_if(vn.size() != size_t(3*t->get_nvtx()),
++           "FlatElementSurface::set_vertex_normals: need 3 nvtx values");
++  vtx_nmls = vn;
++  nml_mode = mode_vertex;
++}
++
++void FlatElementSurface::set_element_normals6 (const std::vector<Real>& v) {
++  throw_if(v.size() != size_t(18*t->get_ncell()),
++           "FlatElementSurface::set_element_normals6: need 18 ncell values");
++  el_nmls6 = v;
++  nml_mode = mode_quad;
++}
++
++void FlatElementSurface::set_normal_fn (const NormalFn& fn) {
++  nml_fn = fn;
++  nml_mode = fn ? int(mode_fn) : int(mode_facet);
++}
++
++void FlatElementSurface
++::slip_lcs_at (const Idx ti, const Real lam[3], const Real p[3],
++               Real lcs[9]) const {
++  Real* const xhat = lcs;
++  Real* const yhat = lcs + 3;
++  Real* const zhat = lcs + 6;
++  if (nml_mode == mode_vertex) {
++    const auto tri = t->get_tri(ti);
++    mv3::sum3(lam[0], &vtx_nmls[3*tri[0]], lam[1], &vtx_nmls[3*tri[1]],
++              lam[2], &vtx_nmls[3*tri[2]], zhat);
++  } else if (nml_mode == mode_quad) {
++    const Real* const nq = &el_nmls6[18*ti];
++    const Real phi[6] = {lam[0]*(2*lam[0] - 1), lam[1]*(2*lam[1] - 1),
++                         lam[2]*(2*lam[2] - 1), 4*lam[0]*lam[1],
++                         4*lam[1]*lam[2], 4*lam[2]*lam[0]};
++    for (int d = 0; d < 3; ++d) {
++      zhat[d] = 0;
++      for (int k = 0; k < 6; ++k) zhat[d] += phi[k]*nq[3*k+d];
++    }
++  } else {
++    nml_fn(p, zhat);
++  }
++  mv3::normalize(zhat);
++  init_xhat_from_primary(zhat, primary_, xhat);
++  mv3::cross(zhat, xhat, yhat);
++  mv3::normalize(yhat);
++}
++
++bool FlatElementSurface
++::cell_slip_lcs (const Idx ti, const int n, CRPtr uv, RPtr lcs) const {
++  if (nml_mode == mode_facet) return false;
++  const auto& vtx_lcs = vtx_lcss[ti];
++  const auto tri = t->get_tri(ti);
++  for (int i = 0; i < n; ++i) {
++    Real lam[3], p[3];
++    t2d::xy_to_barycentric(vtx_lcs.v2, vtx_lcs.b, &uv[2*i], lam);
++    mv3::sum3(lam[0], t->get_vtx(tri[0]), lam[1], t->get_vtx(tri[1]),
++              lam[2], t->get_vtx(tri[2]), p);
++    slip_lcs_at(ti, lam, p, &lcs[9*i]);
++  }
++  return true;
++}
++
++void FlatElementSurface::cell_ctr_slip_lcs (const Idx ti, Real lcs[9]) const {
++  if (nml_mode == mode_facet) {
++    cell_ctr_lcs(ti, lcs);
++    return;
++  }
++  const Real lam[] = {1.0/3, 1.0/3, 1.0/3};
++  slip_lcs_at(ti, lam, &tri_ctrs_gcs[3*ti], lcs);
++}
+ 
+ static void calc_flat_elem_jacobian (
+   // Triangle GCS vertices.
+diff -ruN -x build* -x install -x .DS_Store a/woodland/squirrel/ctzx_surface.hpp b/woodland/squirrel/ctzx_surface.hpp
+--- a/woodland/squirrel/ctzx_surface.hpp	2026-10-14 15:31:22
++++ b/woodland/squirrel/ctzx_surface.hpp	2026-11-11 17:55:56
+@@ -6,6 +6,8 @@
+ #include "woodland/squirrel/gallery.hpp"
+ #include "woodland/squirrel/ctzx_triangulation.hpp"
+ 
++#include <functional>
++
+ namespace woodland {
+ namespace squirrel {
+ namespace ctzx {
+@@ -85,10 +87,40 @@
+   bool can_interpolate_outside_cell () const override { return false; }
+   bool calc_cell_lcs(const Idx ti, const Real xyz[3], Real uv[2]) const override;
+ 
++  // Nodal-normal test. The slip frame is built from a normal field that is
++  // continuous across the elements: the normalized barycentric blend of
++  // vertex normals (nvtx x 3), or a normal function of the point.
++  typedef std::function<void(const Real p[3], Real n[3])> NormalFn;
++  void set_vertex_normals(const std::vector<Real>& vtx_nmls);
++  void set_normal_fn(const NormalFn& fn);
++  // Quadratic blend of six normals per triangle (vertices 0,1,2, then the
++  // midpoints of the edges 01, 12, 20), nt x 6 x 3.
++  void set_element_normals6(const std::vector<Real>& el_nmls6);
++  // Oracle: the slip magnitude as a function of the point.
++  typedef std::function<Real(const Real p[3])> SlipFn;
++  void set_slip_fn(const SlipFn& fn) { slip_fn = fn; }
++  bool slip_magnitude(const int n, CRPtr xyz, RPtr s) const override {
++    if (not slip_fn) return false;
++    for (int i = 0; i < n; ++i) s[i] = slip_fn(&xyz[3*i]);
++    return true;
++  }
++  bool cell_slip_lcs(const Idx ti, const int n, CRPtr uv,
++                     RPtr lcs) const override;
++  void cell_ctr_slip_lcs(const Idx ti, Real lcs[9]) const override;
++
+   static int unittest();
+ 
+ private:
+   typedef std::vector<Real> RealArray;
++
++  enum : int { mode_facet = 0, mode_vertex = 1, mode_fn = 2, mode_quad = 3 };
++  int nml_mode = mode_facet;
++  RealArray vtx_nmls, el_nmls6;
++  NormalFn nml_fn;
++  SlipFn slip_fn;
++  Real primary_[3];
++  void slip_lcs_at(const Idx ti, const Real lam[3], const Real p[3],
++                   Real lcs[9]) const;
+ 
+   // Local cooordinate system for each triangle.
+   struct LCS {
+diff -ruN -x build* -x install -x .DS_Store a/woodland/squirrel/discretization.hpp b/woodland/squirrel/discretization.hpp
+--- a/woodland/squirrel/discretization.hpp	2026-10-14 15:31:22
++++ b/woodland/squirrel/discretization.hpp	2026-11-11 17:55:56
+@@ -48,6 +48,21 @@
+     const Idx ci, const int n, CRPtr uv, RPtr xyz, RPtr lcs = nullptr,
+     RPtr jacdet = nullptr, RPtr jac = nullptr) const = 0;
+ 
++  // Nodal-normal test: the local coordinate system in which the dislocation
++  // components are given (slip direction) and the receiver stress is resolved.
++  // The geometric LCS of cell_position (its zhat is the normal of the
++  // integration surface) is unchanged. By default the two coincide: return
++  // false, and cell_ctr_slip_lcs returns cell_ctr_lcs.
++  virtual bool cell_slip_lcs (const Idx ci, const int n, CRPtr uv,
++                              RPtr lcs) const
++  { return false; }
++  virtual void cell_ctr_slip_lcs (const Idx ci, Real lcs[9]) const
++  { cell_ctr_lcs(ci, lcs); }
++  // Nodal-normal test, oracle: the slip magnitude (first slip component) at n
++  // global points, replacing the reconstruction; false if not provided.
++  virtual bool slip_magnitude (const int n, CRPtr xyz, RPtr s) const
++  { return false; }
++
+   // Can cell_position1 be called with uv outside of element ci?
+   virtual bool can_interpolate_outside_cell () const { return false; }
+   // Even if !can_interpolate_outside_cell(), a meaningful LCS point can still
+diff -ruN -x build* -x install -x .DS_Store a/woodland/squirrel/nn_flat.cpp b/woodland/squirrel/nn_flat.cpp
+--- a/woodland/squirrel/nn_flat.cpp	1969-12-31 16:00:00
++++ b/woodland/squirrel/nn_flat.cpp	2026-11-12 11:42:54
+@@ -0,0 +1,189 @@
++// Nodal-normal test on flat triangles (EarthquakeCycle/nodalnormal/woodland_nn).
++//
++// Reads a triangulation, a normal mode and optionally vertex normals from a
++// binary file, puts a dislocation of magnitude s (1 by default) along the
++// local x direction of the slip frame on every triangle, and writes the stress
++// at the centroids, resolved in the slip frame of the receiver.
++//
++// Input (little endian):
++//   int32  nv, nt, mode, disloc_order, hill, has_slip
++//   double A, lam, mu
++//   double V[3 nv]; int32 T[3 nt]; double N[3 nv] if mode == 1,
++//   double N6[18 nt] if mode == 3; double s[nt] if has_slip (the slip magnitude
++//   at the centroids, else 1)
++// mode 0: facet normal (the slip in the element plane, Woodland as it is);
++//      1: barycentric blend of the vertex normals N;
++//      2: exact normal of z = A f(x) g(y) at every point (hill 0: md,
++//         1: c3; zero outside [0,1]^2);
++//      3: quadratic blend of six normals per triangle N6 (vertices, then the
++//         midpoints of the edges 01, 12, 20).
++// Output: double [nt][9]: centroid (3), stress (xx, xy, xz, yy, yz, zz) in the
++// slip frame of the receiver.
++
++#include "woodland/squirrel/ctzx.hpp"
++#include "woodland/squirrel/ctzx_surface.hpp"
++#include "woodland/squirrel/ctzx_triangulation.hpp"
++#include "woodland/squirrel/calc_stress.hpp"
++#include "woodland/acorn/matvec.hpp"
++#include "woodland/acorn/openmp.hpp"
++#include "woodland/acorn/util.hpp"
++#include "woodland/acorn/dbg.hpp"
++
++#include <cmath>
++#include <cstdio>
++#include <cstdint>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++namespace woodland {
++namespace squirrel {
++namespace ctzx {
++
++namespace {
++// f(x), g(y) of the hill and their first derivatives (nodalnormal/reference/
++// smallslope.py: md, and c3 = md f sin^2(pi x), (1 - cos 2 pi y)^2).
++void hill_fg (const int hill, const Real x, const Real y, Real& f, Real& fx,
++              Real& g, Real& gy) {
++  const Real a = 2*M_PI, b = 4*M_PI;
++  const Real f0 = std::cos(a*x) - std::cos(b*x);
++  const Real f1 = -a*std::sin(a*x) + b*std::sin(b*x);
++  const Real g0 = 2 - 2*std::cos(a*y), g1 = 2*a*std::sin(a*y);
++  if (hill == 0) {
++    f = f0; fx = f1; g = g0; gy = g1;
++    return;
++  }
++  const Real s = std::sin(M_PI*x), c = std::cos(M_PI*x);
++  f = f0*s*s;
++  fx = f1*s*s + f0*2*M_PI*s*c;
++  const Real v0 = 0.5*g0, v1 = 0.5*g1;
++  g = v0*v0;
++  gy = 2*v0*v1;
++}
++
++template <typename T> void readn (FILE* fp, T* v, const size_t n) {
++  if (std::fread(v, sizeof(T), n, fp) != n)
++    throw std::runtime_error("nn_flat: short read");
++}
++} // namespace
++
++void run_nn_flat (const std::string& params) {
++  std::string fin, fout;
++  for (const auto& tok : acorn::split(params, ",")) {
++    const auto kv = acorn::split(tok, "=");
++    if (kv.size() != 2) continue;
++    if (kv[0] == "in") fin = kv[1];
++    else if (kv[0] == "out") fout = kv[1];
++  }
++  throw_if(fin.empty() || fout.empty(), "nn_flat: need in=FILE,out=FILE");
++
++  FILE* fp = std::fopen(fin.c_str(), "rb");
++  throw_if(!fp, "nn_flat: cannot open the input file");
++  int32_t hdr[6];
++  readn(fp, hdr, 6);
++  const int nv = hdr[0], nt = hdr[1], mode = hdr[2], dorder = hdr[3],
++    hill = hdr[4], has_slip = hdr[5];
++  double par[3];
++  readn(fp, par, 3);
++  const Real A = par[0], lam = par[1], mu = par[2];
++  std::vector<double> V(3*nv), N;
++  std::vector<int32_t> T(3*nt);
++  readn(fp, V.data(), V.size());
++  readn(fp, T.data(), T.size());
++  if (mode == 1) {
++    N.resize(3*nv);
++    readn(fp, N.data(), N.size());
++  } else if (mode == 3) {
++    N.resize(18*nt);
++    readn(fp, N.data(), N.size());
++  }
++  std::vector<double> slip(nt, 1.0);
++  if (has_slip) readn(fp, slip.data(), slip.size());
++  // has_slip == 2: also the exact slip magnitude at every quadrature point
++  // (oracle; smallslope_var.slip = 1 + 0.5 cos(2 pi x) cos(2 pi y)).
++  std::fclose(fp);
++
++  const auto t = std::make_shared<Triangulation>();
++  t->begin_modifications();
++  for (int i = 0; i < nt; ++i) t->append_tri(&T[3*i]);
++  for (int i = 0; i < nv; ++i) t->append_vtx();
++  t->end_modifications();
++  for (int i = 0; i < nv; ++i)
++    for (int d = 0; d < 3; ++d) t->get_vtx(i)[d] = V[3*i+d];
++  const auto tr = std::make_shared<TriangulationRelations>(t);
++  const auto m = tri2mesh(*t, tr);
++
++  const Real primary[] = {1, 0, 0};
++  const auto srf = std::make_shared<FlatElementSurface>(t, primary);
++  if (mode == 1)
++    srf->set_vertex_normals(std::vector<Real>(N.begin(), N.end()));
++  else if (mode == 3)
++    srf->set_element_normals6(std::vector<Real>(N.begin(), N.end()));
++  else if (mode == 2)
++    srf->set_normal_fn([=] (const Real p[3], Real n[3]) {
++      const Real x = p[0], y = p[1];
++      Real hx = 0, hy = 0;
++      if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {
++        Real f, fx, g, gy;
++        hill_fg(hill, x, y, f, fx, g, gy);
++        hx = A*fx*g;
++        hy = A*f*gy;
++      }
++      n[0] = -hx; n[1] = -hy; n[2] = 1;
++    });
++  if (has_slip == 2)
++    srf->set_slip_fn([] (const Real p[3]) {
++      return 1 + 0.5*std::cos(2*M_PI*p[0])*std::cos(2*M_PI*p[1]); });
++  const auto d = make_discretization(m, srf);
++  d->set_disloc_order(dorder);
++
++  std::vector<Real> dislocs(3*nt, 0.0);
++  for (int i = 0; i < nt; ++i) dislocs[3*i] = slip[i];
++
++  Stress::Options o, onbr;
++  set_standard_options(o, onbr);
++  const GreensFnParams gfp(lam, mu, false);
++  Stress stress(d);
++  stress.init_dislocs(dislocs.data());
++  const auto& re = *m->get_relations();
++
++  std::printf("nn_flat: nv %d nt %d mode %d dislocorder %d hill %d A %g "
++              "threads %d\n", nv, nt, mode, dorder, hill, A,
++              acorn::get_max_threads());
++  std::fflush(stdout);
++  const Real t0 = acorn::dbg::gettime();
++  std::vector<double> out(9*size_t(nt));
++  int done = 0;
++  ompparfor for (Idx ir = 0; ir < nt; ++ir) {
++    Real sigma[6] = {0};
++    for (Idx is = 0; is < nt; ++is) {
++      Real s[6];
++      const bool nbrs = mesh::are_nbrs(re, ir, is);
++      stress.calc_s1_r1(gfp, is, ir, s, nbrs ? onbr : o);
++      for (int i = 0; i < 6; ++i) sigma[i] += s[i];
++    }
++    Real lcs[9];
++    srf->cell_ctr_slip_lcs(ir, lcs);
++    acorn::rotate_sym_tensor_3x3_RARt(lcs, sigma);
++    srf->cell_ctr_xyz(ir, &out[9*size_t(ir)]);
++    for (int i = 0; i < 6; ++i) out[9*size_t(ir) + 3 + i] = sigma[i];
++    int k;
++#   pragma omp atomic capture
++    k = ++done;
++    if (nt >= 10 && k % (nt/10) == 0) {
++      std::printf("nn_flat: %3d%% (%.1f s)\n", int(100.0*k/nt + 0.5),
++                  acorn::dbg::gettime() - t0);
++      std::fflush(stdout);
++    }
++  }
++  fp = std::fopen(fout.c_str(), "wb");
++  throw_if(!fp, "nn_flat: cannot open the output file");
++  std::fwrite(out.data(), sizeof(double), out.size(), fp);
++  std::fclose(fp);
++  std::printf("nn_flat: done, %.1f s -> %s\n", acorn::dbg::gettime() - t0,
++              fout.c_str());
++}
++
++} // namespace ctzx
++} // namespace squirrel
++} // namespace woodland
+diff -ruN -x build* -x install -x .DS_Store a/woodland/squirrel/testmain.cpp b/woodland/squirrel/testmain.cpp
+--- a/woodland/squirrel/testmain.cpp	2026-10-14 15:31:22
++++ b/woodland/squirrel/testmain.cpp	2026-11-11 17:24:15
+@@ -16,6 +16,7 @@
+   enum Enum : int
+     { unittest = 0, runcase,
+       ct_we_zx, ct_oe_zx, ct_stress_zxy, ct_stress_zxy_exact, ct_matrix_zxy,
++      nn_flat,
+       invalid };
+   static Enum convert(const int i);
+   static Enum convert(const std::string& e);
+@@ -38,6 +39,7 @@
+   // Yudong 03/04/2026
+   if (e == "ct_stress_zxy_exact") return ct_stress_zxy_exact;
+   if (e == "ct_matrix_zxy") return ct_matrix_zxy;
++  if (e == "nn_flat") return nn_flat;
+   return invalid;
+ }
+ 
+@@ -51,6 +53,7 @@
+   // Yudong 03/04/2026
+   case ct_stress_zxy_exact: return "ct_stress_zxy_exact";
+   case ct_matrix_zxy: return "ct_matrix_zxy";
++  case nn_flat: return "nn_flat";
+   case invalid:
+   default: return "invalid";
+   }
+@@ -100,6 +103,9 @@
+     case Command::ct_matrix_zxy: ctzx::run_matrix_zxy(params); break;
+     default: assert(0);
+     }
++  } break;
++  case Command::nn_flat: {
++    ctzx::run_nn_flat(argc > 2 ? argv[2] : "");
+   } break;
+   case Command::invalid:
+   default: {

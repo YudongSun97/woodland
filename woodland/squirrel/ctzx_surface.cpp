@@ -495,6 +495,7 @@ static void calc_cross (const Triangulation& t, const Idx ti, RPtr nml) {
 void FlatElementSurface
 ::init (const Triangulation::CPtr& t_, const Real primary[3]) {
   t = t_;
+  mv3::copy(primary, primary_);
   const auto& rt = *t;
   const auto ntri = rt.get_ncell();
   lcss.resize(ntri);
@@ -567,6 +568,77 @@ bool FlatElementSurface
 }
 
 bool FlatElementSurface::supports_J () const { return true; }
+
+void FlatElementSurface::set_vertex_normals (const std::vector<Real>& vn) {
+  throw_if(vn.size() != size_t(3*t->get_nvtx()),
+           "FlatElementSurface::set_vertex_normals: need 3 nvtx values");
+  vtx_nmls = vn;
+  nml_mode = mode_vertex;
+}
+
+void FlatElementSurface::set_element_normals6 (const std::vector<Real>& v) {
+  throw_if(v.size() != size_t(18*t->get_ncell()),
+           "FlatElementSurface::set_element_normals6: need 18 ncell values");
+  el_nmls6 = v;
+  nml_mode = mode_quad;
+}
+
+void FlatElementSurface::set_normal_fn (const NormalFn& fn) {
+  nml_fn = fn;
+  nml_mode = fn ? int(mode_fn) : int(mode_facet);
+}
+
+void FlatElementSurface
+::slip_lcs_at (const Idx ti, const Real lam[3], const Real p[3],
+               Real lcs[9]) const {
+  Real* const xhat = lcs;
+  Real* const yhat = lcs + 3;
+  Real* const zhat = lcs + 6;
+  if (nml_mode == mode_vertex) {
+    const auto tri = t->get_tri(ti);
+    mv3::sum3(lam[0], &vtx_nmls[3*tri[0]], lam[1], &vtx_nmls[3*tri[1]],
+              lam[2], &vtx_nmls[3*tri[2]], zhat);
+  } else if (nml_mode == mode_quad) {
+    const Real* const nq = &el_nmls6[18*ti];
+    const Real phi[6] = {lam[0]*(2*lam[0] - 1), lam[1]*(2*lam[1] - 1),
+                         lam[2]*(2*lam[2] - 1), 4*lam[0]*lam[1],
+                         4*lam[1]*lam[2], 4*lam[2]*lam[0]};
+    for (int d = 0; d < 3; ++d) {
+      zhat[d] = 0;
+      for (int k = 0; k < 6; ++k) zhat[d] += phi[k]*nq[3*k+d];
+    }
+  } else {
+    nml_fn(p, zhat);
+  }
+  mv3::normalize(zhat);
+  init_xhat_from_primary(zhat, primary_, xhat);
+  mv3::cross(zhat, xhat, yhat);
+  mv3::normalize(yhat);
+}
+
+bool FlatElementSurface
+::cell_slip_lcs (const Idx ti, const int n, CRPtr uv, RPtr lcs) const {
+  if (nml_mode == mode_facet) return false;
+  const auto& vtx_lcs = vtx_lcss[ti];
+  const auto tri = t->get_tri(ti);
+  for (int i = 0; i < n; ++i) {
+    Real lam[3], p[3];
+    t2d::xy_to_barycentric(vtx_lcs.v2, vtx_lcs.b, &uv[2*i], lam);
+    mv3::sum3(lam[0], t->get_vtx(tri[0]), lam[1], t->get_vtx(tri[1]),
+              lam[2], t->get_vtx(tri[2]), p);
+    slip_lcs_at(ti, lam, p, &lcs[9*i]);
+  }
+  return true;
+}
+
+void FlatElementSurface::cell_ctr_slip_lcs (const Idx ti, Real lcs[9]) const {
+  if (nml_mode == mode_facet) {
+    cell_ctr_lcs(ti, lcs);
+    return;
+  }
+  const Real lam[] = {1.0/3, 1.0/3, 1.0/3};
+  slip_lcs_at(ti, lam, &tri_ctrs_gcs[3*ti], lcs);
+}
 
 static void calc_flat_elem_jacobian (
   // Triangle GCS vertices.

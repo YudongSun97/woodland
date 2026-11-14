@@ -16,6 +16,7 @@ set(WOODLAND_SQUIRREL_SRCS
   greens_function.cpp
   mesh_based_surface.cpp
   mesh.cpp
+  nn_flat.cpp
   pywrite.cpp
   solver1d.cpp
   testmain.cpp

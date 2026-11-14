@@ -117,7 +117,7 @@ void ConvTest
       for (int i = 0; i < 6; ++i) sigma[i] += s[i];
     }
     Real lcs[9];
-    srf.cell_ctr_lcs(ir, lcs);
+    srf.cell_ctr_slip_lcs(ir, lcs);
     acorn::rotate_sym_tensor_3x3_RARt(lcs, sigma);
   }
   if (verbosity > 0) printf("\n");

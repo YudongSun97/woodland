@@ -118,22 +118,32 @@ struct Integrands : public acorn::CallerIntegrands {
 
   void eval (const int n, CRPtr xys_lcs, CRPtr J_times_pdirs,
              RPtr integrands) const {
-    const int nper = 16;
+    const int nper = 26;
     if (wrk.size() < size_t(n*nper)) wrk.resize(n*nper);
     RPtr p_gcs = wrk.data();
     RPtr lcs = p_gcs + 3*n;
     RPtr jacdet = lcs + 9*n;
     RPtr disloc_lcs = jacdet + n;
+    RPtr slip_lcs = disloc_lcs + 3*n;
+    RPtr smag = slip_lcs + 9*n;
 
     const bool mult_by_R3 = J_times_pdirs;
 
     srf->cell_position(isrc, n, xys_lcs, p_gcs, lcs, jacdet);
+    // Slip frame (nodal-normal test); the kernel keeps the geometric normal.
+    const bool own_slip_lcs = srf->cell_slip_lcs(isrc, n, xys_lcs, slip_lcs);
     d->reconstruct_ci(isrc, ndisloc, coefs, n, disloc_ctr_lcs, xys_lcs,
                       disloc_lcs);
+    if (srf->slip_magnitude(n, p_gcs, smag))
+      for (int k = 0; k < n; ++k) {
+        disloc_lcs[3*k] = smag[k];
+        disloc_lcs[3*k+1] = disloc_lcs[3*k+2] = 0;
+      }
 
     for (int k = 0; k < n; ++k) {
       Real disloc_gcs[3];
-      mv3::tmatvec(&lcs[9*k], &disloc_lcs[3*k], disloc_gcs);
+      mv3::tmatvec(own_slip_lcs ? &slip_lcs[9*k] : &lcs[9*k],
+                   &disloc_lcs[3*k], disloc_gcs);
 
       const auto integrand = &integrands[nsigma*k];
       if (halfspace_terms)
@@ -316,7 +326,7 @@ void Stress
     Real s[6];
     calc_s1_r1(sj_disloc, coefs, gfp, sj, ri, s, nbrs ? o_nbrs : o);
     Real lcs[9];
-    srf.cell_ctr_lcs(ri, lcs);
+    srf.cell_ctr_slip_lcs(ri, lcs);
     acorn::rotate_sym_tensor_3x3_RARt(lcs, s);
     for (int i = 0; i < 6; ++i)
       sigma[i] += s[i];

@@ -48,6 +48,21 @@ struct Surface {
     const Idx ci, const int n, CRPtr uv, RPtr xyz, RPtr lcs = nullptr,
     RPtr jacdet = nullptr, RPtr jac = nullptr) const = 0;
 
+  // Nodal-normal test: the local coordinate system in which the dislocation
+  // components are given (slip direction) and the receiver stress is resolved.
+  // The geometric LCS of cell_position (its zhat is the normal of the
+  // integration surface) is unchanged. By default the two coincide: return
+  // false, and cell_ctr_slip_lcs returns cell_ctr_lcs.
+  virtual bool cell_slip_lcs (const Idx ci, const int n, CRPtr uv,
+                              RPtr lcs) const
+  { return false; }
+  virtual void cell_ctr_slip_lcs (const Idx ci, Real lcs[9]) const
+  { cell_ctr_lcs(ci, lcs); }
+  // Nodal-normal test, oracle: the slip magnitude (first slip component) at n
+  // global points, replacing the reconstruction; false if not provided.
+  virtual bool slip_magnitude (const int n, CRPtr xyz, RPtr s) const
+  { return false; }
+
   // Can cell_position1 be called with uv outside of element ci?
   virtual bool can_interpolate_outside_cell () const { return false; }
   // Even if !can_interpolate_outside_cell(), a meaningful LCS point can still

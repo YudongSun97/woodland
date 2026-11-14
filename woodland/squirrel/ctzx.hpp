@@ -287,6 +287,8 @@ void convtest_w_vs_e(const std::string& params);
 void convtest_o_vs_e(const std::string& params);
 // Stress on z=f(x,y): init_zxy, discretize, eval (no exact reference). Params: nx=, ny=, srfrecon=0, testcase=, ntri=.
 void run_stress_zxy(const std::string& params);
+// Nodal-normal test on flat triangles (nn_flat.cpp).
+void run_nn_flat(const std::string& params);
 // Yudong 03/04/2026
 // Stress on z=f(x,y): init_zxy, discretize, eval_exact_at_cell_ctrs (Exact reference) and optionally compare to eval.
 void run_stress_zxy_exact(const std::string& params);

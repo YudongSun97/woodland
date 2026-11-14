@@ -16,6 +16,7 @@ struct Command {
   enum Enum : int
     { unittest = 0, runcase,
       ct_we_zx, ct_oe_zx, ct_stress_zxy, ct_stress_zxy_exact, ct_matrix_zxy,
+      nn_flat,
       invalid };
   static Enum convert(const int i);
   static Enum convert(const std::string& e);
@@ -38,6 +39,7 @@ Command::Enum Command::convert (const std::string& e) {
   // Yudong 03/04/2026
   if (e == "ct_stress_zxy_exact") return ct_stress_zxy_exact;
   if (e == "ct_matrix_zxy") return ct_matrix_zxy;
+  if (e == "nn_flat") return nn_flat;
   return invalid;
 }
 
@@ -51,6 +53,7 @@ std::string Command::convert (const Command::Enum e) {
   // Yudong 03/04/2026
   case ct_stress_zxy_exact: return "ct_stress_zxy_exact";
   case ct_matrix_zxy: return "ct_matrix_zxy";
+  case nn_flat: return "nn_flat";
   case invalid:
   default: return "invalid";
   }
@@ -100,6 +103,9 @@ int main (int argc, char** argv) {
     case Command::ct_matrix_zxy: ctzx::run_matrix_zxy(params); break;
     default: assert(0);
     }
+  } break;
+  case Command::nn_flat: {
+    ctzx::run_nn_flat(argc > 2 ? argv[2] : "");
   } break;
   case Command::invalid:
   default: {

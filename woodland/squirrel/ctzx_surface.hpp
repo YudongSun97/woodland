@@ -6,6 +6,8 @@
 #include "woodland/squirrel/gallery.hpp"
 #include "woodland/squirrel/ctzx_triangulation.hpp"
 
+#include <functional>
+
 namespace woodland {
 namespace squirrel {
 namespace ctzx {
@@ -85,10 +87,40 @@ struct FlatElementSurface : public Surface {
   bool can_interpolate_outside_cell () const override { return false; }
   bool calc_cell_lcs(const Idx ti, const Real xyz[3], Real uv[2]) const override;
 
+  // Nodal-normal test. The slip frame is built from a normal field that is
+  // continuous across the elements: the normalized barycentric blend of
+  // vertex normals (nvtx x 3), or a normal function of the point.
+  typedef std::function<void(const Real p[3], Real n[3])> NormalFn;
+  void set_vertex_normals(const std::vector<Real>& vtx_nmls);
+  void set_normal_fn(const NormalFn& fn);
+  // Quadratic blend of six normals per triangle (vertices 0,1,2, then the
+  // midpoints of the edges 01, 12, 20), nt x 6 x 3.
+  void set_element_normals6(const std::vector<Real>& el_nmls6);
+  // Oracle: the slip magnitude as a function of the point.
+  typedef std::function<Real(const Real p[3])> SlipFn;
+  void set_slip_fn(const SlipFn& fn) { slip_fn = fn; }
+  bool slip_magnitude(const int n, CRPtr xyz, RPtr s) const override {
+    if (not slip_fn) return false;
+    for (int i = 0; i < n; ++i) s[i] = slip_fn(&xyz[3*i]);
+    return true;
+  }
+  bool cell_slip_lcs(const Idx ti, const int n, CRPtr uv,
+                     RPtr lcs) const override;
+  void cell_ctr_slip_lcs(const Idx ti, Real lcs[9]) const override;
+
   static int unittest();
 
 private:
   typedef std::vector<Real> RealArray;
+
+  enum : int { mode_facet = 0, mode_vertex = 1, mode_fn = 2, mode_quad = 3 };
+  int nml_mode = mode_facet;
+  RealArray vtx_nmls, el_nmls6;
+  NormalFn nml_fn;
+  SlipFn slip_fn;
+  Real primary_[3];
+  void slip_lcs_at(const Idx ti, const Real lam[3], const Real p[3],
+                   Real lcs[9]) const;
 
   // Local cooordinate system for each triangle.
   struct LCS {
